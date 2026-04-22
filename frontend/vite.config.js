@@ -10,10 +10,8 @@ export default defineConfig({
       manifest: {
         name: 'Momentum A2B Navigator',
         short_name: 'Momentum',
-        description: 'Gulf Stream Tactical Router for HR52',
+        description: 'Gulf Stream Tactical Routing App',
         theme_color: '#000000',
-        display: 'standalone', // This makes it look like a real App!
-        orientation: 'landscape',
         icons: [
           {
             src: 'pwa-192x192.png',
@@ -23,5 +21,9 @@ export default defineConfig({
         ]
       }
     })
-  ]
+  ],
+  server: {
+    host: true, // This allows your iPad to see the dev server
+    port: 5173
+  }
 })
