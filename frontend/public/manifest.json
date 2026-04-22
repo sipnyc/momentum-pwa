@@ -1,0 +1,18 @@
+{
+  "name": "Momentum A2B Navigator",
+  "short_name": "Momentum",
+  "description": "Professional Gulf Stream Routing & Performance App",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#000000",
+  "theme_color": "#2ecc71",
+  "orientation": "landscape",
+  "icons": [
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/3412/3412862.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
