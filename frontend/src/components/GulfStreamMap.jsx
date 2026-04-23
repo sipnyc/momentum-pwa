@@ -20,7 +20,7 @@ const GulfStreamMap = () => {
       });
       const data = await response.json();
       setRouteData(data.points);
-      setMeta(data.metadata);
+      setMeta(data.metadata || {});
     } catch (err) {
       console.error("Link to Brain failed", err);
     } finally {
@@ -42,26 +42,26 @@ const GulfStreamMap = () => {
     <div className="app-container">
       {/* TACTICAL HUD SIDEBAR */}
       <div className="dashboard-side">
-        <h2 style={{ color: '#fff', fontSize: '1.2rem', borderBottom: '1px solid #333', marginTop: 0 }}>NAV DATA</h2>
+        <h2 style={{ color: '#00ff00', fontSize: '1.4rem', marginTop: 0, marginBottom: '20px', fontFamily: 'monospace', letterSpacing: '2px' }}>MOMENTUM A2B</h2>
 
-        <div style={{ marginTop: '30px', padding: '18px', background: '#051205', borderRadius: '12px', boxShadow: '0 0 25px rgba(0, 255, 0, 0.12)' }}>
-          <p style={{ color: '#7f7f7f', margin: 0, fontSize: '0.9rem', letterSpacing: '1px' }}>Wind Speed</p>
-          <p style={{ fontSize: '2.4rem', fontWeight: 'bold', color: '#00ff00', fontFamily: 'monospace', letterSpacing: '2px', textShadow: '0 0 12px rgba(0, 255, 0, 0.7)', margin: '8px 0 0' }}>{meta.wind_speed || '--'}</p>
+        <div style={{ marginTop: '0', padding: '18px', background: '#051205', borderRadius: '14px', boxShadow: '0 0 30px rgba(0, 255, 0, 0.18)' }}>
+          <p style={{ color: '#7f7f7f', margin: 0, fontSize: '0.85rem', letterSpacing: '1px' }}>SOG (VMG)</p>
+          <p style={{ fontSize: '3rem', fontWeight: 'bold', color: '#00ff00', fontFamily: 'monospace', letterSpacing: '2px', textShadow: '0 0 14px rgba(0, 255, 0, 0.75)', margin: '10px 0 0' }}>{meta.vmg || '--'}<span style={{ fontSize: '1.2rem', marginLeft: '8px' }}>kts</span></p>
         </div>
 
-        <div style={{ marginTop: '20px', padding: '18px', background: '#051205', borderRadius: '12px', boxShadow: '0 0 25px rgba(0, 255, 0, 0.12)' }}>
-          <p style={{ color: '#7f7f7f', margin: 0, fontSize: '0.9rem', letterSpacing: '1px' }}>VMG</p>
-          <p style={{ fontSize: '2.4rem', fontWeight: 'bold', color: '#00ff00', fontFamily: 'monospace', letterSpacing: '2px', textShadow: '0 0 12px rgba(0, 255, 0, 0.7)', margin: '8px 0 0' }}>{meta.vmg || '--'}</p>
+        <div style={{ marginTop: '20px', padding: '18px', background: '#051205', borderRadius: '14px', boxShadow: '0 0 30px rgba(0, 255, 0, 0.18)' }}>
+          <p style={{ color: '#7f7f7f', margin: 0, fontSize: '0.85rem', letterSpacing: '1px' }}>Wind Speed</p>
+          <p style={{ fontSize: '2.4rem', fontWeight: 'bold', color: '#00ff00', fontFamily: 'monospace', letterSpacing: '2px', textShadow: '0 0 14px rgba(0, 255, 0, 0.75)', margin: '10px 0 0' }}>{meta.wind_speed || '--'}</p>
         </div>
 
-        <div style={{ marginTop: '20px', padding: '18px', background: '#051205', borderRadius: '12px', boxShadow: '0 0 25px rgba(0, 255, 0, 0.12)' }}>
-          <p style={{ color: '#7f7f7f', margin: 0, fontSize: '0.9rem', letterSpacing: '1px' }}>Current</p>
-          <p style={{ fontSize: '2.4rem', fontWeight: 'bold', color: '#00ff00', fontFamily: 'monospace', letterSpacing: '2px', textShadow: '0 0 12px rgba(0, 255, 0, 0.7)', margin: '8px 0 0' }}>{meta.current_velocity || '--'}</p>
+        <div style={{ marginTop: '20px', padding: '18px', background: '#051205', borderRadius: '14px', boxShadow: '0 0 30px rgba(0, 255, 0, 0.18)' }}>
+          <p style={{ color: '#7f7f7f', margin: 0, fontSize: '0.85rem', letterSpacing: '1px' }}>Current</p>
+          <p style={{ fontSize: '2.4rem', fontWeight: 'bold', color: '#00ff00', fontFamily: 'monospace', letterSpacing: '2px', textShadow: '0 0 14px rgba(0, 255, 0, 0.75)', margin: '10px 0 0' }}>{meta.current_velocity || '--'}</p>
         </div>
 
-        <div style={{ marginTop: '20px', padding: '18px', background: '#051205', borderRadius: '12px', boxShadow: '0 0 25px rgba(0, 255, 0, 0.12)' }}>
-          <p style={{ color: '#7f7f7f', margin: 0, fontSize: '0.9rem', letterSpacing: '1px' }}>Status</p>
-          <p style={{ fontSize: '1.6rem', fontWeight: 'bold', color: '#00ff00', fontFamily: 'monospace', letterSpacing: '1px', textShadow: '0 0 10px rgba(0, 255, 0, 0.7)', margin: '8px 0 0' }}>{loading ? 'Loading...' : meta.status || 'Waiting...'}</p>
+        <div style={{ marginTop: '20px', padding: '18px', background: '#051205', borderRadius: '14px', boxShadow: '0 0 30px rgba(0, 255, 0, 0.18)' }}>
+          <p style={{ color: '#7f7f7f', margin: 0, fontSize: '0.85rem', letterSpacing: '1px' }}>Status</p>
+          <p style={{ fontSize: '1.6rem', fontWeight: 'bold', color: '#00ff00', fontFamily: 'monospace', letterSpacing: '1px', textShadow: '0 0 10px rgba(0, 255, 0, 0.7)', margin: '10px 0 0' }}>{loading ? 'Loading...' : meta.status || 'Waiting...'}</p>
         </div>
 
         <div style={{ position: 'fixed', bottom: '20px', left: '20px' }}>
