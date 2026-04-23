@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, useMapEvents, Polyline } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 
@@ -26,6 +26,42 @@ const GulfStreamMap = () => {
     } finally {
       setLoading(false);
     }
+  };
+
+  const parseWindDirection = (dir) => {
+    const raw = String(dir || '').replace(/[^0-9.+-]/g, '');
+    const value = parseFloat(raw);
+    return Number.isFinite(value) ? value : 0;
+  };
+
+  const windBarbs = () => {
+    const windDirValue = parseWindDirection(meta.wind_dir);
+    const windSpeedValue = parseFloat(String(meta.wind_speed || '').replace(/[^0-9.+-]/g, '')) || 0;
+    const bearing = ((windDirValue + 180) % 360) * Math.PI / 180;
+    const arrowLength = 0.2 + windSpeedValue * 0.015;
+    const dx = Math.sin(bearing) * arrowLength;
+    const dy = Math.cos(bearing) * arrowLength;
+    const headLength = arrowLength * 0.35;
+    const headAngleA = bearing + Math.PI * 0.75;
+    const headAngleB = bearing - Math.PI * 0.75;
+
+    const grid = [
+      [-2.0, -3.0], [-2.0, 0], [-2.0, 3.0],
+      [0, -3.0], [0, 0], [0, 3.0],
+      [2.0, -3.0], [2.0, 0], [2.0, 3.0],
+    ];
+
+    return grid.flatMap(([latOff, lonOff]) => {
+      const start = [startPos[0] + latOff, startPos[1] + lonOff];
+      const end = [start[0] + dy, start[1] + dx];
+      const head1 = [end[0] + Math.cos(headAngleA) * headLength, end[1] + Math.sin(headAngleA) * headLength];
+      const head2 = [end[0] + Math.cos(headAngleB) * headLength, end[1] + Math.sin(headAngleB) * headLength];
+      return [
+        { positions: [start, end] },
+        { positions: [end, head1] },
+        { positions: [end, head2] },
+      ];
+    });
   };
 
   const MapEvents = () => {
@@ -81,6 +117,15 @@ const GulfStreamMap = () => {
           <Marker position={startPos}><Popup>Current Position</Popup></Marker>
           <Marker position={[32.3078, -64.7505]}><Popup>Bermuda Finish</Popup></Marker>
           {routeData && <Polyline positions={routeData} color="#00ffff" weight={4} />}
+          {meta.wind_speed && meta.wind_dir && windBarbs().map((barb, index) => (
+            <Polyline
+              key={`barb-${index}`}
+              positions={barb.positions}
+              color="rgba(0, 255, 0, 0.55)"
+              weight={2}
+              opacity={0.6}
+            />
+          ))}
         </MapContainer>
       </div>
     </div>

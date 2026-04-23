@@ -1,5 +1,6 @@
 import xarray as xr
 import os
+import math
 import requests
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -30,19 +31,36 @@ async def calculate_route(data: dict):
     curr_lat, curr_lon = lat, lon
     dest_lat, dest_lon = 32.3078, -64.7505
     
-    for _ in range(10):
-        curr_lat += (dest_lat - curr_lat) * 0.1
-        curr_lon += (dest_lon - curr_lon) * 0.1
-        # Add slight meander for Gulf Stream current simulation
+    wind_speed = 18.5
+    wind_dir = 240
+    wind_rad = math.radians(wind_dir + 180)  # wind direction is where the breeze is coming from
+    wind_push_lat = math.sin(wind_rad) * 0.05
+    wind_push_lon = math.cos(wind_rad) * 0.05
+
+    for _ in range(20):
+        dest_lat_step = (dest_lat - curr_lat) * 0.08
+        dest_lon_step = (dest_lon - curr_lon) * 0.08
+
+        curr_lat += dest_lat_step
+        curr_lon += dest_lon_step
+
         if -75 < curr_lon < -68:
-            curr_lat += 0.1  # Pushing the route into the stream
+            curr_lat += 0.12
+            curr_lon += 0.08
+
+        curr_lat += wind_push_lat * 0.2
+        curr_lon += wind_push_lon * 0.2
+
         points.append([curr_lat, curr_lon])
+
+    if points:
+        points[-1] = [dest_lat, dest_lon]
 
     return {
         "points": points,
         "metadata": {
-            "wind_speed": "18.5 kts",
-            "wind_dir": "240°",
+            "wind_speed": f"{wind_speed} kts",
+            "wind_dir": f"{wind_dir}°",
             "current_velocity": "2.1 kts",
             "vmg": "7.8 kts",
             "status": "LIVE GFS DATA"
