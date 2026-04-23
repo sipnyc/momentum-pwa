@@ -295,17 +295,36 @@ const GulfStreamMap = () => {
               opacity={0.55}
             />
           ))}
-          {showCurrentHeatmap && (
-            <> 
-              <Rectangle bounds={[[33.5, -75.5], [34.2, -73.5]]} pathOptions={{ color: 'rgba(255,0,0,0.05)', fillColor: 'rgba(255,0,0,0.18)', fillOpacity: 0.18, weight: 0 }} />
-              <Rectangle bounds={[[32.7, -72.8], [33.3, -71.2]]} pathOptions={{ color: 'rgba(0,0,255,0.05)', fillColor: 'rgba(0,0,255,0.18)', fillOpacity: 0.18, weight: 0 }} />
+          {showCurrentHeatmap && meta.current_field && meta.current_field.zones && (
+            <>
+              {meta.current_field.zones.map((zone, idx) => (
+                <Rectangle
+                  key={`current-${idx}`}
+                  bounds={zone.bounds}
+                  pathOptions={{
+                    color: `rgba(255, 100, 0, ${0.05 * zone.intensity})`,
+                    fillColor: `rgba(255, 100, 0, ${0.2 * zone.intensity})`,
+                    fillOpacity: 0.18 * zone.intensity,
+                    weight: 0
+                  }}
+                />
+              ))}
             </>
           )}
-          {showSeaTemp && (
-            <Polygon
-              pathOptions={{ color: 'rgba(0,255,0,0.35)', dashArray: '6,8', weight: 3 }}
-              positions={[[33.9, -76.2], [33.6, -74.5], [33.3, -72.8], [33.0, -71.2]]}
-            />
+          {showSeaTemp && meta.sea_temp && meta.sea_temp.isotherms && (
+            <>
+              {meta.sea_temp.isotherms.map((isotherm, idx) => (
+                <Polygon
+                  key={`temp-${idx}`}
+                  pathOptions={{
+                    color: `rgba(0, 150, 255, ${0.35 + idx * 0.1})`,
+                    dashArray: '6,8',
+                    weight: 2
+                  }}
+                  positions={isotherm.bounds}
+                />
+              ))}
+            </>
           )}
         </MapContainer>
         <div style={{ position: 'absolute', bottom: '24px', right: '24px', width: '180px', height: '180px', borderRadius: '50%', background: 'rgba(1, 10, 5, 0.9)', border: '1px solid rgba(0,255,0,0.24)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 0 40px rgba(0,255,0,0.2)', padding: '16px' }}>
