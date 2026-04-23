@@ -35,29 +35,41 @@ const GulfStreamMap = () => {
   };
 
   return (
-    <div style={{ display: 'flex', height: '100vh', width: '100vw', background: '#1a1a1a' }}>
+    <div className="app-container">
       {/* TACTICAL HUD SIDEBAR */}
-      <div style={{ width: '250px', background: '#000', color: '#00ff00', padding: '20px', borderRight: '2px solid #333', fontFamily: 'monospace' }}>
-        <h2 style={{ color: '#fff', fontSize: '1.2rem', borderBottom: '1px solid #333' }}>NAV DATA</h2>
+      <div className="dashboard-side">
+        <h2 style={{ color: '#fff', fontSize: '1.2rem', borderBottom: '1px solid #333', marginTop: 0 }}>NAV DATA</h2>
         <div style={{ marginTop: '30px' }}>
-          <p style={{ color: '#888' }}>CURRENT PROFIT</p>
-          <p style={{ fontSize: '2rem', fontWeight: 'bold' }}>{metadata.stream_profit}</p>
+          <p style={{ color: '#888', marginBottom: '5px' }}>CURRENT PROFIT</p>
+          <p style={{ fontSize: '2rem', fontWeight: 'bold', color: '#00ff00' }}>{metadata.stream_profit}</p>
         </div>
         <div style={{ marginTop: '20px' }}>
-          <p style={{ color: '#888' }}>ETA TO BERMUDA</p>
-          <p style={{ fontSize: '1.5rem' }}>{metadata.eta}</p>
+          <p style={{ color: '#888', marginBottom: '5px' }}>ETA TO BERMUDA</p>
+          <p style={{ fontSize: '1.5rem', color: '#00ff00' }}>{metadata.eta}</p>
         </div>
         <div style={{ marginTop: '20px' }}>
-          <p style={{ color: '#888' }}>ENGINE STATUS</p>
+          <p style={{ color: '#888', marginBottom: '5px' }}>ENGINE STATUS</p>
           <p style={{ fontSize: '0.8rem', color: '#f1c40f' }}>{metadata.status}</p>
         </div>
-        <div style={{ position: 'absolute', bottom: '20px' }}>
+        {metadata.distance && (
+          <div style={{ marginTop: '20px' }}>
+            <p style={{ color: '#888', marginBottom: '5px' }}>DISTANCE</p>
+            <p style={{ fontSize: '1rem', color: '#00ff00' }}>{metadata.distance}</p>
+          </div>
+        )}
+        {metadata.fuel_cost && (
+          <div style={{ marginTop: '20px' }}>
+            <p style={{ color: '#888', marginBottom: '5px' }}>FUEL COST</p>
+            <p style={{ fontSize: '1rem', color: '#00ff00' }}>{metadata.fuel_cost}</p>
+          </div>
+        )}
+        <div style={{ position: 'fixed', bottom: '20px', left: '20px' }}>
           <p style={{ fontSize: '0.7rem', color: '#444' }}>MOMENTUM PWA v1.0</p>
         </div>
       </div>
 
       {/* MAP AREA */}
-      <div style={{ flex: 1, position: 'relative' }}>
+      <div className="map-side">
         <MapContainer center={startPos} zoom={5} style={{ height: '100%', width: '100%' }}>
           <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
           <MapEvents />
