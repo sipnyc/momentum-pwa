@@ -5,7 +5,7 @@ import 'leaflet/dist/leaflet.css';
 const GulfStreamMap = () => {
   const [startPos, setStartPos] = useState([38.9072, -77.0369]);
   const [routeData, setRouteData] = useState(null);
-  const [metadata, setMetadata] = useState({ stream_profit: "0.0 kt", eta: "--", status: "Idle" });
+  const [metadata, setMetadata] = useState({ wind_speed: "-- kt", vmg: "-- kt", eta: "--" });
 
   const API_BASE = window.location.origin.replace('-5173', '-8000');
 
@@ -39,30 +39,22 @@ const GulfStreamMap = () => {
       {/* TACTICAL HUD SIDEBAR */}
       <div className="dashboard-side">
         <h2 style={{ color: '#fff', fontSize: '1.2rem', borderBottom: '1px solid #333', marginTop: 0 }}>NAV DATA</h2>
+        
         <div style={{ marginTop: '30px' }}>
-          <p style={{ color: '#888', marginBottom: '5px' }}>CURRENT PROFIT</p>
-          <p style={{ fontSize: '2rem', fontWeight: 'bold', color: '#00ff00' }}>{metadata.stream_profit}</p>
+          <p style={{ color: '#888', marginBottom: '5px', fontSize: '0.9rem', letterSpacing: '1px' }}>WIND</p>
+          <p style={{ fontSize: '2.2rem', fontWeight: 'bold', color: '#00ff00', fontFamily: 'monospace', letterSpacing: '2px', textShadow: '0 0 10px #00ff00' }}>{metadata.wind_speed}</p>
         </div>
-        <div style={{ marginTop: '20px' }}>
-          <p style={{ color: '#888', marginBottom: '5px' }}>ETA TO BERMUDA</p>
-          <p style={{ fontSize: '1.5rem', color: '#00ff00' }}>{metadata.eta}</p>
+        
+        <div style={{ marginTop: '25px' }}>
+          <p style={{ color: '#888', marginBottom: '5px', fontSize: '0.9rem', letterSpacing: '1px' }}>VMG</p>
+          <p style={{ fontSize: '2.2rem', fontWeight: 'bold', color: '#00ff00', fontFamily: 'monospace', letterSpacing: '2px', textShadow: '0 0 10px #00ff00' }}>{metadata.vmg}</p>
         </div>
-        <div style={{ marginTop: '20px' }}>
-          <p style={{ color: '#888', marginBottom: '5px' }}>ENGINE STATUS</p>
-          <p style={{ fontSize: '0.8rem', color: '#f1c40f' }}>{metadata.status}</p>
+        
+        <div style={{ marginTop: '25px' }}>
+          <p style={{ color: '#888', marginBottom: '5px', fontSize: '0.9rem', letterSpacing: '1px' }}>ETA</p>
+          <p style={{ fontSize: '1.8rem', color: '#00ff00', fontFamily: 'monospace', letterSpacing: '1px', textShadow: '0 0 10px #00ff00' }}>{metadata.eta}</p>
         </div>
-        {metadata.distance && (
-          <div style={{ marginTop: '20px' }}>
-            <p style={{ color: '#888', marginBottom: '5px' }}>DISTANCE</p>
-            <p style={{ fontSize: '1rem', color: '#00ff00' }}>{metadata.distance}</p>
-          </div>
-        )}
-        {metadata.fuel_cost && (
-          <div style={{ marginTop: '20px' }}>
-            <p style={{ color: '#888', marginBottom: '5px' }}>FUEL COST</p>
-            <p style={{ fontSize: '1rem', color: '#00ff00' }}>{metadata.fuel_cost}</p>
-          </div>
-        )}
+        
         <div style={{ position: 'fixed', bottom: '20px', left: '20px' }}>
           <p style={{ fontSize: '0.7rem', color: '#444' }}>MOMENTUM PWA v1.0</p>
         </div>
