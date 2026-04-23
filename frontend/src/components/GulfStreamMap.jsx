@@ -5,11 +5,13 @@ import 'leaflet/dist/leaflet.css';
 const GulfStreamMap = () => {
   const [startPos, setStartPos] = useState([38.9072, -77.0369]);
   const [routeData, setRouteData] = useState(null);
-  const [routingData, setRoutingData] = useState({ vmg: '--', wind_speed: '--', current_velocity: '--', status: 'Waiting...' });
+  const [meta, setMeta] = useState({});
+  const [loading, setLoading] = useState(false);
 
   const API_BASE = window.location.origin.replace('-5173', '-8000');
 
   const fetchRoute = async (lat, lon) => {
+    setLoading(true);
     try {
       const response = await fetch(`${API_BASE}/calculate_route`, {
         method: 'POST',
@@ -18,9 +20,11 @@ const GulfStreamMap = () => {
       });
       const data = await response.json();
       setRouteData(data.points);
-      setRoutingData(data.metadata);
+      setMeta(data.metadata);
     } catch (err) {
       console.error("Link to Brain failed", err);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -39,27 +43,27 @@ const GulfStreamMap = () => {
       {/* TACTICAL HUD SIDEBAR */}
       <div className="dashboard-side">
         <h2 style={{ color: '#fff', fontSize: '1.2rem', borderBottom: '1px solid #333', marginTop: 0 }}>NAV DATA</h2>
-        
-        <div style={{ marginTop: '30px' }}>
-          <p style={{ color: '#888', marginBottom: '5px', fontSize: '0.9rem', letterSpacing: '1px' }}>SOG</p>
-          <p style={{ fontSize: '2.5rem', fontWeight: 'bold', color: '#00ff00', fontFamily: 'monospace', letterSpacing: '2px', textShadow: '0 0 15px #00ff00', margin: 0 }}>{routingData?.vmg || '--'} <span style={{ fontSize: '1.2rem' }}>kts</span></p>
+
+        <div style={{ marginTop: '30px', padding: '18px', background: '#051205', borderRadius: '12px', boxShadow: '0 0 25px rgba(0, 255, 0, 0.12)' }}>
+          <p style={{ color: '#7f7f7f', margin: 0, fontSize: '0.9rem', letterSpacing: '1px' }}>Wind Speed</p>
+          <p style={{ fontSize: '2.4rem', fontWeight: 'bold', color: '#00ff00', fontFamily: 'monospace', letterSpacing: '2px', textShadow: '0 0 12px rgba(0, 255, 0, 0.7)', margin: '8px 0 0' }}>{meta.wind_speed || '--'}</p>
         </div>
-        
-        <div style={{ marginTop: '25px' }}>
-          <p style={{ color: '#888', marginBottom: '5px', fontSize: '0.9rem', letterSpacing: '1px' }}>WIND</p>
-          <p style={{ fontSize: '2.5rem', fontWeight: 'bold', color: '#00ff00', fontFamily: 'monospace', letterSpacing: '2px', textShadow: '0 0 15px #00ff00', margin: 0 }}>{routingData?.wind_speed || '--'}</p>
+
+        <div style={{ marginTop: '20px', padding: '18px', background: '#051205', borderRadius: '12px', boxShadow: '0 0 25px rgba(0, 255, 0, 0.12)' }}>
+          <p style={{ color: '#7f7f7f', margin: 0, fontSize: '0.9rem', letterSpacing: '1px' }}>VMG</p>
+          <p style={{ fontSize: '2.4rem', fontWeight: 'bold', color: '#00ff00', fontFamily: 'monospace', letterSpacing: '2px', textShadow: '0 0 12px rgba(0, 255, 0, 0.7)', margin: '8px 0 0' }}>{meta.vmg || '--'}</p>
         </div>
-        
-        <div style={{ marginTop: '25px' }}>
-          <p style={{ color: '#888', marginBottom: '5px', fontSize: '0.9rem', letterSpacing: '1px' }}>CURRENT</p>
-          <p style={{ fontSize: '2.5rem', fontWeight: 'bold', color: '#00ff00', fontFamily: 'monospace', letterSpacing: '2px', textShadow: '0 0 15px #00ff00', margin: 0 }}>{routingData?.current_velocity || '--'}</p>
+
+        <div style={{ marginTop: '20px', padding: '18px', background: '#051205', borderRadius: '12px', boxShadow: '0 0 25px rgba(0, 255, 0, 0.12)' }}>
+          <p style={{ color: '#7f7f7f', margin: 0, fontSize: '0.9rem', letterSpacing: '1px' }}>Current</p>
+          <p style={{ fontSize: '2.4rem', fontWeight: 'bold', color: '#00ff00', fontFamily: 'monospace', letterSpacing: '2px', textShadow: '0 0 12px rgba(0, 255, 0, 0.7)', margin: '8px 0 0' }}>{meta.current_velocity || '--'}</p>
         </div>
-        
-        <div style={{ marginTop: '25px' }}>
-          <p style={{ color: '#888', marginBottom: '5px', fontSize: '0.9rem', letterSpacing: '1px' }}>STATUS</p>
-          <p style={{ fontSize: '1.3rem', fontWeight: 'bold', color: '#00ff00', fontFamily: 'monospace', letterSpacing: '1px', textShadow: '0 0 10px #00ff00', margin: 0 }}>{routingData?.status || 'Waiting...'}</p>
+
+        <div style={{ marginTop: '20px', padding: '18px', background: '#051205', borderRadius: '12px', boxShadow: '0 0 25px rgba(0, 255, 0, 0.12)' }}>
+          <p style={{ color: '#7f7f7f', margin: 0, fontSize: '0.9rem', letterSpacing: '1px' }}>Status</p>
+          <p style={{ fontSize: '1.6rem', fontWeight: 'bold', color: '#00ff00', fontFamily: 'monospace', letterSpacing: '1px', textShadow: '0 0 10px rgba(0, 255, 0, 0.7)', margin: '8px 0 0' }}>{loading ? 'Loading...' : meta.status || 'Waiting...'}</p>
         </div>
-        
+
         <div style={{ position: 'fixed', bottom: '20px', left: '20px' }}>
           <p style={{ fontSize: '0.7rem', color: '#444' }}>MOMENTUM PWA v1.0</p>
         </div>
