@@ -19,7 +19,7 @@ def get_gulf_stream_velocity(lat, lon):
         return 3.5  # 3.5 knots of current profit!
     return 0.0
 
-@app.post("/calculate_route")
+@app.post("/isochrone")
 async def calculate_route(data: dict):
     start_lat = data.get("lat")
     start_lon = data.get("lon")
