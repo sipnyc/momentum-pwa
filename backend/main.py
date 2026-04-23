@@ -2,6 +2,7 @@ import xarray as xr
 import os
 import math
 import requests
+import numpy as np
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from global_land_mask import globe
@@ -21,10 +22,59 @@ def download_weather():
             f.write(r.content)
         print("Weather Downloaded.")
 
+def extract_wind_field():
+    """Extract U/V wind components from GRIB file and return grid of wind vectors"""
+    try:
+        ds = xr.open_dataset(GRIB_FILE, engine='cfgrib')
+        if 'u10m' in ds or 'UGRD_10m' in ds:
+            u_key = 'u10m' if 'u10m' in ds else 'UGRD_10m'
+            v_key = 'v10m' if 'v10m' in ds else 'VGRD_10m'
+            u = ds[u_key].values[0] if u_key in ds else np.zeros((73, 81))
+            v = ds[v_key].values[0] if v_key in ds else np.zeros((73, 81))
+            lats = ds['latitude'].values
+            lons = ds['longitude'].values
+            
+            # Create 5x5 grid sampling of wind field
+            grid = []
+            lat_stride = max(1, len(lats) // 5)
+            lon_stride = max(1, len(lons) // 5)
+            
+            for i in range(0, len(lats), lat_stride)[:5]:
+                for j in range(0, len(lons), lon_stride)[:5]:
+                    lat = float(lats[i])
+                    lon = float(lons[j])
+                    u_val = float(u[i, j]) if i < len(u) and j < len(u[0]) else 0
+                    v_val = float(v[i, j]) if i < len(v) and j < len(v[0]) else 0
+                    grid.append({"lat": lat, "lon": lon, "u": u_val, "v": v_val})
+            return grid
+        else:
+            # Fallback: return hardcoded grid if GRIB vars not found
+            wind_dir_rad = math.radians(240)
+            wind_speed = 18.5
+            u = -wind_speed * math.sin(wind_dir_rad)
+            v = -wind_speed * math.cos(wind_dir_rad)
+            grid = []
+            for latOff in [-2, 0, 2]:
+                for lonOff in [-3, 0, 3]:
+                    grid.append({"lat": 38.9 + latOff, "lon": -77.0 + lonOff, "u": u, "v": v})
+            return grid
+    except Exception as e:
+        print(f"Wind field extraction failed: {e}")
+        wind_dir_rad = math.radians(240)
+        wind_speed = 18.5
+        u = -wind_speed * math.sin(wind_dir_rad)
+        v = -wind_speed * math.cos(wind_dir_rad)
+        grid = []
+        for latOff in [-2, 0, 2]:
+            for lonOff in [-3, 0, 3]:
+                grid.append({"lat": 38.9 + latOff, "lon": -77.0 + lonOff, "u": u, "v": v})
+        return grid
+
 @app.post("/isochrone")
 async def calculate_route(data: dict):
     lat, lon = data.get("lat"), data.get("lon")
     download_weather()
+    wind_field = extract_wind_field()
 
     def heading_between(lat1, lon1, lat2, lon2):
         dlon = math.radians(lon2 - lon1)
@@ -71,13 +121,17 @@ async def calculate_route(data: dict):
         lon_new = lon_pt + math.sin(rad) * step_deg / max(math.cos(math.radians(lat_pt)), 0.01)
         return lat_new, lon_new
 
+    # Extract wind from field at starting position
+    avg_u = np.mean([w['u'] for w in wind_field])
+    avg_v = np.mean([w['v'] for w in wind_field])
+    wind_speed = math.sqrt(avg_u**2 + avg_v**2)
+    wind_dir = (math.degrees(math.atan2(-avg_u, -avg_v)) + 360) % 360
+    tws = wind_speed if wind_speed > 0.1 else 18.5
+
     points = [[lat, lon]]
     curr_lat, curr_lon = lat, lon
     dest_lat, dest_lon = 32.3078, -64.7505
 
-    wind_speed = 18.5
-    wind_dir = 240
-    tws = wind_speed
     optimal_heading = heading_between(curr_lat, curr_lon, dest_lat, dest_lon)
     last_vmg = 0.0
     last_twa = 120
@@ -125,15 +179,16 @@ async def calculate_route(data: dict):
     return {
         "points": points,
         "metadata": {
-            "wind_speed": f"{wind_speed} kts",
-            "wind_dir": f"{wind_dir}°",
+            "wind_speed": f"{round(wind_speed, 1)} kts",
+            "wind_dir": f"{round(wind_dir)}°",
             "current_velocity": "2.1 kts",
             "vmg": f"{round(last_vmg, 1)} kts",
             "twa": f"{round(last_twa)}°",
-            "tws": f"{tws} kts",
+            "tws": f"{round(tws, 1)} kts",
             "cog": f"{round(optimal_heading)}°",
             "opt_heading": f"{round(dest_heading)}°",
-            "status": "HR53 POLAR ROUTE"
+            "status": "HR53 POLAR ROUTE",
+            "wind_field": wind_field
         }
     }
 

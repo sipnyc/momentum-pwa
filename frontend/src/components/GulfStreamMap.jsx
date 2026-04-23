@@ -106,24 +106,55 @@ const GulfStreamMap = () => {
   };
 
   const windBarbs = () => {
-    const windDirValue = parseWindDirection(meta.wind_dir);
-    const windSpeedValue = parseFloat(String(meta.wind_speed || '').replace(/[^0-9.+-]/g, '')) || 0;
-    const bearing = ((windDirValue + 180) % 360) * Math.PI / 180;
-    const arrowLength = 0.2 + windSpeedValue * 0.015;
-    const dx = Math.sin(bearing) * arrowLength;
-    const dy = Math.cos(bearing) * arrowLength;
-    const headLength = arrowLength * 0.35;
-    const headAngleA = bearing + Math.PI * 0.75;
-    const headAngleB = bearing - Math.PI * 0.75;
+    // Use wind_field from metadata if available, otherwise generate grid
+    const windField = meta.wind_field && Array.isArray(meta.wind_field) ? meta.wind_field : [];
+    
+    if (windField.length === 0) {
+      // Fallback to static grid with hardcoded wind
+      const windDirValue = parseWindDirection(meta.wind_dir);
+      const windSpeedValue = parseFloat(String(meta.wind_speed || '').replace(/[^0-9.+-]/g, '')) || 0;
+      const bearing = ((windDirValue + 180) % 360) * Math.PI / 180;
+      const arrowLength = 0.2 + windSpeedValue * 0.015;
+      const dx = Math.sin(bearing) * arrowLength;
+      const dy = Math.cos(bearing) * arrowLength;
+      const headLength = arrowLength * 0.35;
+      const headAngleA = bearing + Math.PI * 0.75;
+      const headAngleB = bearing - Math.PI * 0.75;
 
-    const grid = [
-      [-2.0, -3.0], [-2.0, 0], [-2.0, 3.0],
-      [0, -3.0], [0, 0], [0, 3.0],
-      [2.0, -3.0], [2.0, 0], [2.0, 3.0],
-    ];
+      const grid = [
+        [-2.0, -3.0], [-2.0, 0], [-2.0, 3.0],
+        [0, -3.0], [0, 0], [0, 3.0],
+        [2.0, -3.0], [2.0, 0], [2.0, 3.0],
+      ];
 
-    return grid.flatMap(([latOff, lonOff]) => {
-      const start = [startPos[0] + latOff, startPos[1] + lonOff];
+      return grid.flatMap(([latOff, lonOff]) => {
+        const start = [startPos[0] + latOff, startPos[1] + lonOff];
+        const end = [start[0] + dy, start[1] + dx];
+        const head1 = [end[0] + Math.cos(headAngleA) * headLength, end[1] + Math.sin(headAngleA) * headLength];
+        const head2 = [end[0] + Math.cos(headAngleB) * headLength, end[1] + Math.sin(headAngleB) * headLength];
+        return [
+          { positions: [start, end] },
+          { positions: [end, head1] },
+          { positions: [end, head2] },
+        ];
+      });
+    }
+
+    // Use real wind field data
+    return windField.flatMap((point) => {
+      const u = point.u || 0;
+      const v = point.v || 0;
+      const windSpeed = Math.sqrt(u * u + v * v);
+      const windDir = (Math.atan2(-u, -v) * 180 / Math.PI + 360) % 360;
+      const bearing = ((windDir + 180) % 360) * Math.PI / 180;
+      const arrowLength = 0.2 + Math.min(windSpeed, 30) * 0.01;
+      const dx = Math.sin(bearing) * arrowLength;
+      const dy = Math.cos(bearing) * arrowLength;
+      const headLength = arrowLength * 0.35;
+      const headAngleA = bearing + Math.PI * 0.75;
+      const headAngleB = bearing - Math.PI * 0.75;
+
+      const start = [point.lat, point.lon];
       const end = [start[0] + dy, start[1] + dx];
       const head1 = [end[0] + Math.cos(headAngleA) * headLength, end[1] + Math.sin(headAngleA) * headLength];
       const head2 = [end[0] + Math.cos(headAngleB) * headLength, end[1] + Math.sin(headAngleB) * headLength];
