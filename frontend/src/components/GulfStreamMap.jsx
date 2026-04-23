@@ -13,7 +13,7 @@ const GulfStreamMap = () => {
   const fetchRoute = async (lat, lon) => {
     setLoading(true);
     try {
-      const response = await fetch(`${API_BASE}/calculate_route`, {
+      const response = await fetch(`${API_BASE}/isochrone`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ lat, lon })
@@ -34,6 +34,10 @@ const GulfStreamMap = () => {
         setStartPos([e.latlng.lat, e.latlng.lng]);
         fetchRoute(e.latlng.lat, e.latlng.lng);
       },
+      contextmenu: (e) => {
+        setStartPos([e.latlng.lat, e.latlng.lng]);
+        fetchRoute(e.latlng.lat, e.latlng.lng);
+      }
     });
     return null;
   };
