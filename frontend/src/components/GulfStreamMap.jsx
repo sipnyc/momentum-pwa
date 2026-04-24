@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from 'react';
-import { MapContainer, TileLayer, Marker, Popup, useMapEvents, Polyline, Rectangle, Polygon } from 'react-leaflet';
+import React, { useEffect, useRef, useState } from 'react';
+import L from 'leaflet';
+import { MapContainer, TileLayer, Marker, Popup, useMapEvents, useMap, Polyline, Rectangle, Polygon } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 
 const GulfStreamMap = () => {
@@ -8,6 +9,7 @@ const GulfStreamMap = () => {
   const [meta, setMeta] = useState({});
   const [windField, setWindField] = useState([]);
   const [currentZones, setCurrentZones] = useState([]);
+  const [seaTempData, setSeaTempData] = useState(null);
   const [forecastHours] = useState([0, 3, 6, 9, 12, 15, 18, 21, 24]);
   const [forecastHour, setForecastHour] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -37,6 +39,7 @@ const GulfStreamMap = () => {
       setMeta(data.metadata || {});
       setWindField((data.metadata && data.metadata.wind_field) || []);
       setCurrentZones((data.metadata && data.metadata.current_field && data.metadata.current_field.zones) || []);
+      setSeaTempData((data.metadata && data.metadata.sea_temp) || null);
     } catch (err) {
       console.error("Link to Brain failed", err);
     } finally {
@@ -113,6 +116,211 @@ const GulfStreamMap = () => {
     const opt = parseHeading(meta.opt_heading, 133);
     const delta = ((cog - opt + 540) % 360) - 180;
     return { cog, opt, delta };
+  };
+
+  const normalizeWindField = () => {
+    if (windField && windField.length > 0) {
+      return windField.filter((point) => point && typeof point.lat === 'number' && typeof point.lon === 'number');
+    }
+
+    const windDirValue = parseWindDirection(meta.wind_dir);
+    const windSpeedValue = parseFloat(String(meta.wind_speed || '').replace(/[^0-9.+-]/g, '')) || 0;
+    const angle = ((windDirValue + 180) % 360) * Math.PI / 180;
+    const u = Math.sin(angle) * windSpeedValue;
+    const v = Math.cos(angle) * windSpeedValue;
+    return [{ lat: startPos[0], lon: startPos[1], u, v }];
+  };
+
+  const temperatureGradientColor = (temp) => {
+    if (!seaTempData) return 'rgba(8, 32, 62, 0.16)';
+    const min = seaTempData.min_temp || 20;
+    const max = seaTempData.max_temp || 30;
+    const ratio = Math.min(1, Math.max(0, (temp - min) / Math.max(0.1, max - min)));
+    const hue = 200 - ratio * 140;
+    return `hsla(${hue}, 82%, 55%, 0.18)`;
+  };
+
+  const WindStreamlineOverlay = ({ active }) => {
+    const map = useMap();
+    const canvasRef = useRef(null);
+    const frameRef = useRef(null);
+    const particlesRef = useRef([]);
+
+    useEffect(() => {
+      if (!active || !map) return undefined;
+      const canvas = document.createElement('canvas');
+      canvas.style.position = 'absolute';
+      canvas.style.top = '0';
+      canvas.style.left = '0';
+      canvas.style.pointerEvents = 'none';
+      canvas.style.zIndex = 450;
+      map.getPanes().overlayPane.appendChild(canvas);
+      canvasRef.current = canvas;
+
+      const field = normalizeWindField();
+      const particles = field.flatMap((point, index) => {
+        const speed = Math.sqrt(point.u * point.u + point.v * point.v) || 2;
+        const angle = Math.atan2(-point.v, point.u);
+        const baseSpeed = Math.max(0.6, Math.min(3.2, speed * 0.12));
+        const color = speed > 14 ? 'rgba(255, 160, 72, 0.92)' : speed > 8 ? 'rgba(125, 211, 252, 0.78)' : 'rgba(99, 102, 241, 0.68)';
+        return Array.from({ length: 6 }, () => ({
+          lat: point.lat,
+          lon: point.lon,
+          angle,
+          baseSpeed,
+          color,
+          length: 16 + Math.random() * 8,
+          xOffset: (Math.random() - 0.5) * 40,
+          yOffset: (Math.random() - 0.5) * 40,
+          alpha: 0.3 + Math.random() * 0.45,
+        }));
+      });
+      particlesRef.current = particles;
+
+      const resizeCanvas = () => {
+        const size = map.getSize();
+        canvas.width = size.x;
+        canvas.height = size.y;
+        canvas.style.width = `${size.x}px`;
+        canvas.style.height = `${size.y}px`;
+      };
+
+      const animate = () => {
+        if (!canvasRef.current || !map) return;
+        resizeCanvas();
+        const ctx = canvasRef.current.getContext('2d');
+        if (!ctx) return;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        const timeFactor = 0.6 + 0.4 * Math.sin((forecastHour / 24) * Math.PI);
+        particlesRef.current.forEach((particle) => {
+          const latLng = L.latLng(particle.lat, particle.lon);
+          const start = map.latLngToContainerPoint(latLng);
+          const px = start.x + particle.xOffset;
+          const py = start.y + particle.yOffset;
+          const speed = particle.baseSpeed * timeFactor;
+          const xEnd = px + Math.cos(particle.angle) * speed * particle.length;
+          const yEnd = py + Math.sin(particle.angle) * speed * particle.length;
+
+          ctx.strokeStyle = particle.color;
+          ctx.lineWidth = 1.8;
+          ctx.globalAlpha = particle.alpha;
+          ctx.beginPath();
+          ctx.moveTo(px, py);
+          ctx.lineTo(xEnd, yEnd);
+          ctx.stroke();
+          ctx.globalAlpha = 1;
+        });
+
+        frameRef.current = requestAnimationFrame(animate);
+      };
+
+      map.on('move resize zoom', resizeCanvas);
+      animate();
+
+      return () => {
+        map.off('move resize zoom', resizeCanvas);
+        if (canvas && canvas.parentNode) {
+          canvas.parentNode.removeChild(canvas);
+        }
+        if (frameRef.current) {
+          cancelAnimationFrame(frameRef.current);
+        }
+      };
+    }, [map, active, forecastHour, windField, meta]);
+
+    return null;
+  };
+
+  const WeatherHeatmapOverlay = ({ showCurrent, showTemp }) => {
+    const map = useMap();
+    const canvasRef = useRef(null);
+
+    useEffect(() => {
+      if (!map) return undefined;
+      const canvas = document.createElement('canvas');
+      canvas.style.position = 'absolute';
+      canvas.style.top = '0';
+      canvas.style.left = '0';
+      canvas.style.pointerEvents = 'none';
+      canvas.style.zIndex = 420;
+      map.getPanes().overlayPane.appendChild(canvas);
+      canvasRef.current = canvas;
+
+      const resizeCanvas = () => {
+        const size = map.getSize();
+        canvas.width = size.x;
+        canvas.height = size.y;
+        canvas.style.width = `${size.x}px`;
+        canvas.style.height = `${size.y}px`;
+      };
+
+      const drawHeatmap = () => {
+        if (!canvasRef.current || !map) return;
+        resizeCanvas();
+        const ctx = canvasRef.current.getContext('2d');
+        if (!ctx) return;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        if (showTemp && seaTempData && seaTempData.isotherms) {
+          const gradient = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
+          gradient.addColorStop(0, 'rgba(35, 113, 255, 0.16)');
+          gradient.addColorStop(0.5, 'rgba(34, 197, 94, 0.12)');
+          gradient.addColorStop(1, 'rgba(239, 68, 68, 0.1)');
+          ctx.fillStyle = gradient;
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+          seaTempData.isotherms.forEach((isotherm) => {
+            if (!isotherm.bounds || isotherm.bounds.length < 3) return;
+            const color = temperatureGradientColor(isotherm.temp || 0);
+            ctx.beginPath();
+            isotherm.bounds.forEach((coord, index) => {
+              const point = map.latLngToContainerPoint(L.latLng(coord[0], coord[1]));
+              if (index === 0) ctx.moveTo(point.x, point.y);
+              else ctx.lineTo(point.x, point.y);
+            });
+            ctx.closePath();
+            ctx.fillStyle = color;
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+          });
+        }
+
+        if (showCurrent && currentZones && currentZones.length > 0) {
+          currentZones.forEach((zone) => {
+            if (!zone.bounds || zone.bounds.length < 2) return;
+            const intensity = Math.min(1, Math.max(0, zone.intensity || 0.25));
+            const movingFactor = 0.6 + 0.4 * Math.cos((forecastHour / 24) * Math.PI);
+            const effective = intensity * movingFactor;
+            let fillColor = 'rgba(77, 140, 255, 0.16)';
+            if (effective > 0.75) fillColor = 'rgba(255, 28, 65, 0.22)';
+            else if (effective > 0.45) fillColor = 'rgba(52, 211, 153, 0.20)';
+            ctx.beginPath();
+            zone.bounds.forEach((coord, index) => {
+              const point = map.latLngToContainerPoint(L.latLng(coord[0], coord[1]));
+              if (index === 0) ctx.moveTo(point.x, point.y);
+              else ctx.lineTo(point.x, point.y);
+            });
+            ctx.closePath();
+            ctx.fillStyle = fillColor;
+            ctx.fill();
+          });
+        }
+      };
+
+      const update = () => drawHeatmap();
+      map.on('move resize zoom', update);
+      update();
+
+      return () => {
+        map.off('move resize zoom', update);
+        if (canvas && canvas.parentNode) canvas.parentNode.removeChild(canvas);
+      };
+    }, [map, showCurrent, showTemp, currentZones, seaTempData, forecastHour]);
+
+    return null;
   };
 
   const windBarbs = () => {
@@ -311,29 +519,8 @@ const GulfStreamMap = () => {
           <Marker position={startPos}><Popup>Current Position</Popup></Marker>
           <Marker position={[32.3078, -64.7505]}><Popup>Bermuda Finish</Popup></Marker>
           {routeData && <Polyline positions={routeData} color="#00ffff" weight={4} />}
-          {showWindStreamlines && windBarbs().map((barb, index) => (
-            <Polyline
-              key={`barb-${index}`}
-              positions={barb.positions}
-              pathOptions={{ color: barb.color || 'rgba(0, 255, 0, 0.45)', weight: barb.weight || 2, opacity: 0.75 }}
-            />
-          ))}
-          {showCurrentHeatmap && currentHeatmapLayers()}
-          {showSeaTemp && meta.sea_temp && meta.sea_temp.isotherms && (
-            <>
-              {meta.sea_temp.isotherms.map((isotherm, idx) => (
-                <Polygon
-                  key={`temp-${idx}`}
-                  pathOptions={{
-                    color: `rgba(0, 150, 255, ${0.35 + idx * 0.1})`,
-                    dashArray: '6,8',
-                    weight: 2
-                  }}
-                  positions={isotherm.bounds}
-                />
-              ))}
-            </>
-          )}
+          <WindStreamlineOverlay active={showWindStreamlines} />
+          <WeatherHeatmapOverlay showCurrent={showCurrentHeatmap} showTemp={showSeaTemp} />
         </MapContainer>
         <div
           style={{
