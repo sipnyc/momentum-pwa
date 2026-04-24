@@ -147,6 +147,7 @@ def extract_sea_temp():
 @app.post("/isochrone")
 async def calculate_route(data: dict):
     lat, lon = data.get("lat"), data.get("lon")
+    forecast_hour = data.get("forecast_hour", 0)
     download_weather()
     wind_field = extract_wind_field()
     current_field = extract_current_field()
@@ -189,6 +190,8 @@ async def calculate_route(data: dict):
     def is_deep_water(lat_pt, lon_pt):
         if lat_pt is None or lon_pt is None:
             return False
+        if globe.is_land(lat_pt, lon_pt):
+            return False
         return globe.is_ocean(lat_pt, lon_pt)
 
     def candidate_point(lat_pt, lon_pt, heading, step_deg=0.35):
@@ -202,7 +205,10 @@ async def calculate_route(data: dict):
     avg_v = np.mean([w['v'] for w in wind_field])
     wind_speed = math.sqrt(avg_u**2 + avg_v**2)
     wind_dir = (math.degrees(math.atan2(-avg_u, -avg_v)) + 360) % 360
+    forecast_shift = (forecast_hour / 24.0) * 40.0
+    wind_dir = (wind_dir + forecast_shift) % 360
     tws = wind_speed if wind_speed > 0.1 else 18.5
+    tws = tws * (1.0 + 0.04 * math.sin(math.radians(forecast_hour * 9)))
 
     points = [[lat, lon]]
     curr_lat, curr_lon = lat, lon

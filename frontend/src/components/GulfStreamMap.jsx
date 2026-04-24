@@ -32,7 +32,7 @@ const GulfStreamMap = () => {
       const response = await fetch(`${API_BASE}/isochrone`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ lat, lon })
+        body: JSON.stringify({ lat, lon, forecast_hour: forecastHour })
       });
       const data = await response.json();
       setRouteData(data.points);
@@ -49,7 +49,7 @@ const GulfStreamMap = () => {
 
   useEffect(() => {
     fetchRoute(startPos[0], startPos[1]);
-  }, [activeModel]);
+  }, [activeModel, forecastHour]);
 
   const parseWindDirection = (dir) => {
     const raw = String(dir || '').replace(/[^0-9.+-]/g, '');
@@ -131,13 +131,18 @@ const GulfStreamMap = () => {
     return [{ lat: startPos[0], lon: startPos[1], u, v }];
   };
 
+  const currentSpeedColor = (speed, pulse) => {
+    if (speed <= 1) return 'rgba(40, 112, 255, 0.10)';
+    if (speed <= 2) return 'rgba(34, 197, 94, 0.16)';
+    const alpha = 0.24 + pulse * 0.12;
+    return `rgba(255, 35, 72, ${alpha})`;
+  };
+
   const temperatureGradientColor = (temp) => {
-    if (!seaTempData) return 'rgba(8, 32, 62, 0.16)';
-    const min = seaTempData.min_temp || 20;
-    const max = seaTempData.max_temp || 30;
-    const ratio = Math.min(1, Math.max(0, (temp - min) / Math.max(0.1, max - min)));
-    const hue = 200 - ratio * 140;
-    return `hsla(${hue}, 82%, 55%, 0.18)`;
+    if (temp <= 20) return 'rgba(128, 0, 128, 0.24)';
+    if (temp >= 25) return 'rgba(255, 85, 0, 0.20)';
+    const mid = (temp - 20) / 5;
+    return `rgba(${Math.round(255 * mid + 128 * (1 - mid))}, ${Math.round(85 * mid)}, ${Math.round(128 * (1 - mid))}, 0.18)`;
   };
 
   const WindStreamlineOverlay = ({ active }) => {
@@ -161,18 +166,18 @@ const GulfStreamMap = () => {
       const particles = field.flatMap((point, index) => {
         const speed = Math.sqrt(point.u * point.u + point.v * point.v) || 2;
         const angle = Math.atan2(-point.v, point.u);
-        const baseSpeed = Math.max(0.6, Math.min(3.2, speed * 0.12));
-        const color = speed > 14 ? 'rgba(255, 160, 72, 0.92)' : speed > 8 ? 'rgba(125, 211, 252, 0.78)' : 'rgba(99, 102, 241, 0.68)';
-        return Array.from({ length: 6 }, () => ({
-          lat: point.lat,
-          lon: point.lon,
+        const baseSpeed = Math.max(0.6, Math.min(3.8, speed * 0.16));
+        const color = speed > 14 ? 'rgba(255, 100, 60, 0.9)' : speed > 8 ? 'rgba(125, 211, 252, 0.88)' : 'rgba(99, 102, 241, 0.76)';
+        return Array.from({ length: 20 }, () => ({
+          lat: point.lat + (Math.random() - 0.5) * 0.45,
+          lon: point.lon + (Math.random() - 0.5) * 0.45,
           angle,
           baseSpeed,
           color,
-          length: 16 + Math.random() * 8,
-          xOffset: (Math.random() - 0.5) * 40,
-          yOffset: (Math.random() - 0.5) * 40,
-          alpha: 0.3 + Math.random() * 0.45,
+          length: 22 + Math.random() * 12,
+          xOffset: (Math.random() - 0.5) * 30,
+          yOffset: (Math.random() - 0.5) * 30,
+          alpha: 0.16 + Math.random() * 0.36,
         }));
       });
       particlesRef.current = particles;
@@ -191,33 +196,33 @@ const GulfStreamMap = () => {
         const ctx = canvasRef.current.getContext('2d');
         if (!ctx) return;
         ctx.clearRect(0, 0, canvas.width, canvas.height);
+          ctx.globalCompositeOperation = 'lighter';
+          ctx.lineCap = 'round';
 
-        const timeFactor = 0.6 + 0.4 * Math.sin((forecastHour / 24) * Math.PI);
-        particlesRef.current.forEach((particle) => {
-          const latLng = L.latLng(particle.lat, particle.lon);
-          const start = map.latLngToContainerPoint(latLng);
-          const px = start.x + particle.xOffset;
-          const py = start.y + particle.yOffset;
-          const speed = particle.baseSpeed * timeFactor;
-          const xEnd = px + Math.cos(particle.angle) * speed * particle.length;
-          const yEnd = py + Math.sin(particle.angle) * speed * particle.length;
+          const timeFactor = 0.55 + 0.45 * Math.sin((forecastHour / 24) * Math.PI);
+          particlesRef.current.forEach((particle) => {
+            const latLng = L.latLng(particle.lat, particle.lon);
+            const start = map.latLngToContainerPoint(latLng);
+            const px = start.x + particle.xOffset;
+            const py = start.y + particle.yOffset;
+            const speed = particle.baseSpeed * timeFactor;
+            const xEnd = px + Math.cos(particle.angle) * speed * particle.length;
+            const yEnd = py + Math.sin(particle.angle) * speed * particle.length;
 
-          ctx.strokeStyle = particle.color;
-          ctx.lineWidth = 1.8;
-          ctx.globalAlpha = particle.alpha;
-          ctx.beginPath();
-          ctx.moveTo(px, py);
-          ctx.lineTo(xEnd, yEnd);
-          ctx.stroke();
+            ctx.strokeStyle = particle.color;
+            ctx.lineWidth = 2;
+            ctx.globalAlpha = particle.alpha * 0.65;
+            ctx.shadowBlur = 12;
+            ctx.shadowColor = particle.color;
+            ctx.beginPath();
+            ctx.moveTo(px, py);
+            ctx.lineTo(xEnd, yEnd);
+            ctx.stroke();
+            ctx.shadowBlur = 0;
+          });
+
           ctx.globalAlpha = 1;
-        });
-
-        frameRef.current = requestAnimationFrame(animate);
-      };
-
-      map.on('move resize zoom', resizeCanvas);
-      animate();
-
+          ctx.globalCompositeOperation = 'source-over';
       return () => {
         map.off('move resize zoom', resizeCanvas);
         if (canvas && canvas.parentNode) {
@@ -262,49 +267,51 @@ const GulfStreamMap = () => {
         if (!ctx) return;
         ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-        if (showTemp && seaTempData && seaTempData.isotherms) {
-          const gradient = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
-          gradient.addColorStop(0, 'rgba(35, 113, 255, 0.16)');
-          gradient.addColorStop(0.5, 'rgba(34, 197, 94, 0.12)');
-          gradient.addColorStop(1, 'rgba(239, 68, 68, 0.1)');
-          ctx.fillStyle = gradient;
+        if (showTemp && seaTempData) {
+          const avgTemp = ((seaTempData.min_temp || 20) + (seaTempData.max_temp || 25)) / 2;
+          ctx.fillStyle = temperatureGradientColor(avgTemp);
           ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-          seaTempData.isotherms.forEach((isotherm) => {
-            if (!isotherm.bounds || isotherm.bounds.length < 3) return;
-            const color = temperatureGradientColor(isotherm.temp || 0);
-            ctx.beginPath();
-            isotherm.bounds.forEach((coord, index) => {
-              const point = map.latLngToContainerPoint(L.latLng(coord[0], coord[1]));
-              if (index === 0) ctx.moveTo(point.x, point.y);
-              else ctx.lineTo(point.x, point.y);
+          if (seaTempData.isotherms) {
+            seaTempData.isotherms.forEach((isotherm) => {
+              if (!isotherm.bounds || isotherm.bounds.length < 3) return;
+              ctx.beginPath();
+              isotherm.bounds.forEach((coord, index) => {
+                const point = map.latLngToContainerPoint(L.latLng(coord[0], coord[1]));
+                if (index === 0) ctx.moveTo(point.x, point.y);
+                else ctx.lineTo(point.x, point.y);
+              });
+              ctx.closePath();
+              ctx.strokeStyle = 'rgba(255, 255, 255, 0.22)';
+              ctx.lineWidth = 2;
+              ctx.setLineDash([8, 10]);
+              ctx.stroke();
+              ctx.setLineDash([]);
             });
-            ctx.closePath();
-            ctx.fillStyle = color;
-            ctx.fill();
-            ctx.strokeStyle = 'rgba(255,255,255,0.25)';
-            ctx.lineWidth = 2;
-            ctx.stroke();
-          });
+          }
         }
 
         if (showCurrent && currentZones && currentZones.length > 0) {
           currentZones.forEach((zone) => {
             if (!zone.bounds || zone.bounds.length < 2) return;
             const intensity = Math.min(1, Math.max(0, zone.intensity || 0.25));
-            const movingFactor = 0.6 + 0.4 * Math.cos((forecastHour / 24) * Math.PI);
-            const effective = intensity * movingFactor;
-            let fillColor = 'rgba(77, 140, 255, 0.16)';
-            if (effective > 0.75) fillColor = 'rgba(255, 28, 65, 0.22)';
-            else if (effective > 0.45) fillColor = 'rgba(52, 211, 153, 0.20)';
+            const speed = intensity * 5;
+            const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 300);
+            const color = currentSpeedColor(speed, pulse);
+            const coords = zone.bounds.map((coord) => map.latLngToContainerPoint(L.latLng(coord[0], coord[1])));
+            const centroid = coords.reduce((acc, pt) => ({ x: acc.x + pt.x, y: acc.y + pt.y }), { x: 0, y: 0 });
+            centroid.x /= coords.length; centroid.y /= coords.length;
+            const radius = Math.max(...coords.map((pt) => Math.hypot(pt.x - centroid.x, pt.y - centroid.y))) * 1.1;
+            const gradient = ctx.createRadialGradient(centroid.x, centroid.y, radius * 0.1, centroid.x, centroid.y, radius);
+            gradient.addColorStop(0, color);
+            gradient.addColorStop(1, 'rgba(255,255,255,0)');
             ctx.beginPath();
-            zone.bounds.forEach((coord, index) => {
-              const point = map.latLngToContainerPoint(L.latLng(coord[0], coord[1]));
+            coords.forEach((point, index) => {
               if (index === 0) ctx.moveTo(point.x, point.y);
               else ctx.lineTo(point.x, point.y);
             });
             ctx.closePath();
-            ctx.fillStyle = fillColor;
+            ctx.fillStyle = gradient;
             ctx.fill();
           });
         }
