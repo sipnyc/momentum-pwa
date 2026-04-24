@@ -196,33 +196,39 @@ const GulfStreamMap = () => {
         const ctx = canvasRef.current.getContext('2d');
         if (!ctx) return;
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-          ctx.globalCompositeOperation = 'lighter';
-          ctx.lineCap = 'round';
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.lineCap = 'round';
 
-          const timeFactor = 0.55 + 0.45 * Math.sin((forecastHour / 24) * Math.PI);
-          particlesRef.current.forEach((particle) => {
-            const latLng = L.latLng(particle.lat, particle.lon);
-            const start = map.latLngToContainerPoint(latLng);
-            const px = start.x + particle.xOffset;
-            const py = start.y + particle.yOffset;
-            const speed = particle.baseSpeed * timeFactor;
-            const xEnd = px + Math.cos(particle.angle) * speed * particle.length;
-            const yEnd = py + Math.sin(particle.angle) * speed * particle.length;
+        const timeFactor = 0.55 + 0.45 * Math.sin((forecastHour / 24) * Math.PI);
+        particlesRef.current.forEach((particle) => {
+          const latLng = L.latLng(particle.lat, particle.lon);
+          const start = map.latLngToContainerPoint(latLng);
+          const px = start.x + particle.xOffset;
+          const py = start.y + particle.yOffset;
+          const speed = particle.baseSpeed * timeFactor;
+          const xEnd = px + Math.cos(particle.angle) * speed * particle.length;
+          const yEnd = py + Math.sin(particle.angle) * speed * particle.length;
 
-            ctx.strokeStyle = particle.color;
-            ctx.lineWidth = 2;
-            ctx.globalAlpha = particle.alpha * 0.65;
-            ctx.shadowBlur = 12;
-            ctx.shadowColor = particle.color;
-            ctx.beginPath();
-            ctx.moveTo(px, py);
-            ctx.lineTo(xEnd, yEnd);
-            ctx.stroke();
-            ctx.shadowBlur = 0;
-          });
+          ctx.strokeStyle = particle.color;
+          ctx.lineWidth = 2;
+          ctx.globalAlpha = particle.alpha * 0.65;
+          ctx.shadowBlur = 12;
+          ctx.shadowColor = particle.color;
+          ctx.beginPath();
+          ctx.moveTo(px, py);
+          ctx.lineTo(xEnd, yEnd);
+          ctx.stroke();
+          ctx.shadowBlur = 0;
+        });
 
-          ctx.globalAlpha = 1;
-          ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha = 1;
+        ctx.globalCompositeOperation = 'source-over';
+        frameRef.current = requestAnimationFrame(animate);
+      };
+
+      map.on('move resize zoom', resizeCanvas);
+      animate();
+
       return () => {
         map.off('move resize zoom', resizeCanvas);
         if (canvas && canvas.parentNode) {
