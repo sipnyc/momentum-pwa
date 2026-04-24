@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, useMapEvents, Polyline, Rectangle, Polygon } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 
@@ -6,6 +6,10 @@ const GulfStreamMap = () => {
   const [startPos, setStartPos] = useState([38.9072, -77.0369]);
   const [routeData, setRouteData] = useState(null);
   const [meta, setMeta] = useState({});
+  const [windField, setWindField] = useState([]);
+  const [currentZones, setCurrentZones] = useState([]);
+  const [forecastHours] = useState([0, 3, 6, 9, 12, 15, 18, 21, 24]);
+  const [forecastHour, setForecastHour] = useState(0);
   const [loading, setLoading] = useState(false);
   const [activeModel, setActiveModel] = useState('GFS');
   const [showWindStreamlines, setShowWindStreamlines] = useState(true);
@@ -31,12 +35,18 @@ const GulfStreamMap = () => {
       const data = await response.json();
       setRouteData(data.points);
       setMeta(data.metadata || {});
+      setWindField((data.metadata && data.metadata.wind_field) || []);
+      setCurrentZones((data.metadata && data.metadata.current_field && data.metadata.current_field.zones) || []);
     } catch (err) {
       console.error("Link to Brain failed", err);
     } finally {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    fetchRoute(startPos[0], startPos[1]);
+  }, [activeModel]);
 
   const parseWindDirection = (dir) => {
     const raw = String(dir || '').replace(/[^0-9.+-]/g, '');
@@ -106,15 +116,15 @@ const GulfStreamMap = () => {
   };
 
   const windBarbs = () => {
-    // Use wind_field from metadata if available, otherwise generate grid
-    const windField = meta.wind_field && Array.isArray(meta.wind_field) ? meta.wind_field : [];
-    
-    if (windField.length === 0) {
-      // Fallback to static grid with hardcoded wind
+    const field = (windField && Array.isArray(windField) ? windField : []).filter((point) => point && typeof point.lat === 'number');
+    const timeFactor = 0.7 + 0.3 * Math.sin((forecastHour / 24) * Math.PI);
+
+    if (field.length === 0) {
       const windDirValue = parseWindDirection(meta.wind_dir);
       const windSpeedValue = parseFloat(String(meta.wind_speed || '').replace(/[^0-9.+-]/g, '')) || 0;
       const bearing = ((windDirValue + 180) % 360) * Math.PI / 180;
-      const arrowLength = 0.2 + windSpeedValue * 0.015;
+      const scaledSpeed = windSpeedValue * timeFactor;
+      const arrowLength = 0.18 + scaledSpeed * 0.015;
       const dx = Math.sin(bearing) * arrowLength;
       const dy = Math.cos(bearing) * arrowLength;
       const headLength = arrowLength * 0.35;
@@ -133,38 +143,53 @@ const GulfStreamMap = () => {
         const head1 = [end[0] + Math.cos(headAngleA) * headLength, end[1] + Math.sin(headAngleA) * headLength];
         const head2 = [end[0] + Math.cos(headAngleB) * headLength, end[1] + Math.sin(headAngleB) * headLength];
         return [
-          { positions: [start, end] },
-          { positions: [end, head1] },
-          { positions: [end, head2] },
+          { positions: [start, end], color: '#7dd3fc', weight: 2 },
+          { positions: [end, head1], color: '#7dd3fc', weight: 2 },
+          { positions: [end, head2], color: '#7dd3fc', weight: 2 },
         ];
       });
     }
 
-    // Use real wind field data
-    return windField.flatMap((point) => {
+    return field.flatMap((point) => {
       const u = point.u || 0;
       const v = point.v || 0;
-      const windSpeed = Math.sqrt(u * u + v * v);
+      const windSpeed = Math.sqrt(u * u + v * v) * timeFactor;
       const windDir = (Math.atan2(-u, -v) * 180 / Math.PI + 360) % 360;
       const bearing = ((windDir + 180) % 360) * Math.PI / 180;
-      const arrowLength = 0.2 + Math.min(windSpeed, 30) * 0.01;
+      const arrowLength = 0.18 + Math.min(windSpeed, 30) * 0.01;
       const dx = Math.sin(bearing) * arrowLength;
       const dy = Math.cos(bearing) * arrowLength;
       const headLength = arrowLength * 0.35;
       const headAngleA = bearing + Math.PI * 0.75;
       const headAngleB = bearing - Math.PI * 0.75;
+      const color = windSpeed > 18 ? '#ff9f43' : windSpeed > 10 ? '#7dd3fc' : '#93c5fd';
 
       const start = [point.lat, point.lon];
       const end = [start[0] + dy, start[1] + dx];
       const head1 = [end[0] + Math.cos(headAngleA) * headLength, end[1] + Math.sin(headAngleA) * headLength];
       const head2 = [end[0] + Math.cos(headAngleB) * headLength, end[1] + Math.sin(headAngleB) * headLength];
       return [
-        { positions: [start, end] },
-        { positions: [end, head1] },
-        { positions: [end, head2] },
+        { positions: [start, end], color, weight: 2 },
+        { positions: [end, head1], color, weight: 2 },
+        { positions: [end, head2], color, weight: 2 },
       ];
     });
   };
+
+  const currentHeatmapLayers = () => currentZones.map((zone, idx) => {
+    if (!zone || !zone.bounds || zone.bounds.length < 2) return null;
+    const intensity = Math.min(1, Math.max(0, zone.intensity || 0.3));
+    const timeIntensity = intensity * (0.75 + 0.25 * Math.cos((forecastHour / 24) * Math.PI));
+    const fillColor = timeIntensity > 0.6 ? '#ff4d4d' : timeIntensity > 0.45 ? '#ff9a56' : '#4d8cff';
+    const fillOpacity = 0.16 + timeIntensity * 0.28;
+    const pathOptions = { color: fillColor, fillColor, fillOpacity, weight: 0 };
+
+    return zone.bounds.length > 2 ? (
+      <Polygon key={`current-zone-${idx}`} positions={zone.bounds} pathOptions={pathOptions} />
+    ) : (
+      <Rectangle key={`current-zone-${idx}`} bounds={zone.bounds} pathOptions={pathOptions} />
+    );
+  });
 
   const MapEvents = () => {
     useMapEvents({
@@ -286,31 +311,14 @@ const GulfStreamMap = () => {
           <Marker position={startPos}><Popup>Current Position</Popup></Marker>
           <Marker position={[32.3078, -64.7505]}><Popup>Bermuda Finish</Popup></Marker>
           {routeData && <Polyline positions={routeData} color="#00ffff" weight={4} />}
-          {showWindStreamlines && meta.wind_speed && meta.wind_dir && windBarbs().map((barb, index) => (
+          {showWindStreamlines && windBarbs().map((barb, index) => (
             <Polyline
               key={`barb-${index}`}
               positions={barb.positions}
-              color="rgba(0, 255, 0, 0.45)"
-              weight={2}
-              opacity={0.55}
+              pathOptions={{ color: barb.color || 'rgba(0, 255, 0, 0.45)', weight: barb.weight || 2, opacity: 0.75 }}
             />
           ))}
-          {showCurrentHeatmap && meta.current_field && meta.current_field.zones && (
-            <>
-              {meta.current_field.zones.map((zone, idx) => (
-                <Rectangle
-                  key={`current-${idx}`}
-                  bounds={zone.bounds}
-                  pathOptions={{
-                    color: `rgba(255, 100, 0, ${0.05 * zone.intensity})`,
-                    fillColor: `rgba(255, 100, 0, ${0.2 * zone.intensity})`,
-                    fillOpacity: 0.18 * zone.intensity,
-                    weight: 0
-                  }}
-                />
-              ))}
-            </>
-          )}
+          {showCurrentHeatmap && currentHeatmapLayers()}
           {showSeaTemp && meta.sea_temp && meta.sea_temp.isotherms && (
             <>
               {meta.sea_temp.isotherms.map((isotherm, idx) => (
@@ -327,6 +335,42 @@ const GulfStreamMap = () => {
             </>
           )}
         </MapContainer>
+        <div
+          style={{
+            position: 'absolute',
+            bottom: 18,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            zIndex: 1000,
+            width: 'calc(100% - 40px)',
+            maxWidth: '560px',
+            background: 'rgba(4, 10, 8, 0.88)',
+            border: '1px solid rgba(255,255,255,0.12)',
+            borderRadius: '18px',
+            padding: '14px 16px',
+            color: '#d8f3ff',
+            boxShadow: '0 20px 60px rgba(0, 0, 0, 0.35)',
+          }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+            <div style={{ fontSize: '0.92rem', fontWeight: 700 }}>Forecast scrubber +{forecastHour}h</div>
+            <div style={{ fontSize: '0.8rem', color: '#93c5fd' }}>U/V velocity & current heatmap layers</div>
+          </div>
+          <input
+            type="range"
+            min="0"
+            max="24"
+            step="3"
+            value={forecastHour}
+            onChange={(e) => setForecastHour(Number(e.target.value))}
+            style={{ width: '100%', marginTop: '12px' }}
+          />
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', color: '#94a3b8', marginTop: '8px' }}>
+            {forecastHours.map((hour) => (
+              <span key={hour}>{hour}h</span>
+            ))}
+          </div>
+        </div>
         <div style={{ position: 'absolute', bottom: '24px', right: '24px', width: '180px', height: '180px', borderRadius: '50%', background: 'rgba(1, 10, 5, 0.9)', border: '1px solid rgba(0,255,0,0.24)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 0 40px rgba(0,255,0,0.2)', padding: '16px' }}>
           <div style={{ position: 'relative', width: '100%', height: '100%' }}>
             <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: '1px solid rgba(255,255,255,0.08)' }} />
