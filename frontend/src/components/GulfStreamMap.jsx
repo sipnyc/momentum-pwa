@@ -4,8 +4,10 @@ import { MapContainer, TileLayer, Marker, Popup, useMapEvents, useMap, Polyline,
 import 'leaflet/dist/leaflet.css';
 
 const GulfStreamMap = () => {
-  const [startPos, setStartPos] = useState([38.9072, -77.0369]);
+  const [startPos, setStartPos] = useState([38.9784, -76.4922]);
   const [routeData, setRouteData] = useState(null);
+  const routeBounds = [[33.6, -79.0], [39.8, -63.8]];
+  const routeCenter = [36.7, -71.4];
   const [meta, setMeta] = useState({});
   const [windField, setWindField] = useState([]);
   const [currentZones, setCurrentZones] = useState([]);
@@ -582,7 +584,14 @@ const GulfStreamMap = () => {
 
       {/* MAP AREA */}
       <div className="map-side">
-        <MapContainer center={startPos} zoom={5} style={{ height: '100%', width: '100%' }}>
+        <MapContainer
+          center={routeCenter}
+          bounds={routeBounds}
+          maxBounds={routeBounds}
+          maxBoundsViscosity={0.8}
+          zoom={6}
+          style={{ height: '100%', width: '100%' }}
+        >
           <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
           <MapEvents />
           <Marker position={startPos}><Popup>Current Position</Popup></Marker>
