@@ -1,11 +1,13 @@
 import csv
 import math
 import os
+import heapq
 
 import numpy as np
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from global_land_mask import globe
 from pydantic import BaseModel
 from scipy.interpolate import RegularGridInterpolator
 
@@ -91,16 +93,31 @@ def propagate(lat, lon, hdg_deg, speed_kts, cu=0.0, cv=0.0, dt_h=1 / 3) -> tuple
     return lat + dlat, lon + dlon
 
 
-# ── Atlantic routing corridor ──────────────────────────────────────
-
 def in_ocean(lat, lon) -> bool:
-    if not (27.0 <= lat <= 43.0 and -79.0 <= lon <= -60.0):
+    if not (24.0 <= lat <= 44.0 and -82.0 <= lon <= -58.0):
         return False
-    if lat < 30.5 and lon > -81.0:   # Florida
+    return not globe.is_land(lat, lon)
+
+
+def segment_in_water(lat1, lon1, lat2, lon2, samples=8, allow_endpoint_land=False) -> bool:
+    if not in_ocean(lat1, lon1):
         return False
-    if 34.5 <= lat <= 35.3 and lon > -75.8:   # Cape Hatteras shoals
+    if not allow_endpoint_land and not in_ocean(lat2, lon2):
         return False
+    for i in range(1, samples + 1):
+        t = i / (samples + 1)
+        la = lat1 + (lat2 - lat1) * t
+        lo = lon1 + (lon2 - lon1) * t
+        if not in_ocean(la, lo):
+            return False
     return True
+
+
+def propagate_segment(lat, lon, hdg_deg, speed_kts, cu, cv, dt_h):
+    nla, nlo = propagate(lat, lon, hdg_deg, speed_kts, cu, cv, dt_h)
+    if not segment_in_water(lat, lon, nla, nlo):
+        return None
+    return nla, nlo
 
 
 # ── Synthetic wind model ───────────────────────────────────────────
@@ -125,16 +142,16 @@ def wind_at(lat, lon, forecast_hour: float = 0) -> tuple:
 # ── Gulf Stream current model ──────────────────────────────────────
 
 def current_at(lat, lon) -> tuple:
-    """Simplified RTOFS Gulf Stream: core flows NE at up to 2 kt; cold eddies southward."""
+    """Simplified RTOFS Gulf Stream: core flows NE at up to 4 kt; cold eddies southward."""
     gs_lat = 37.0 - (lon + 73.0) * 0.28   # GS axis approximation
     dist = lat - gs_lat
     if abs(dist) <= 1.5:
-        strength = 2.0 * math.exp(-0.5 * (dist / 0.7) ** 2)
+        strength = 4.0 * math.exp(-0.5 * (dist / 0.7) ** 2)
         cu = strength * math.sin(math.radians(45))
         cv = strength * math.cos(math.radians(45))
         return cu, cv
     if -3.0 <= dist < 0:
-        eddy = 0.55 * math.exp((dist + 1.5) / 1.5)
+        eddy = 1.1 * math.exp((dist + 1.5) / 1.5)
         cu = -eddy * math.sin(math.radians((lon * 15) % 360))
         cv = -eddy * math.cos(math.radians((lat * 15) % 360))
         return cu, cv
@@ -147,21 +164,22 @@ def gs_profit_kts(lat, lon) -> float:
 
 
 # ── Isochrone fan expansion ────────────────────────────────────────
-# Fans are visual-only "reachability bubbles" at 3 h, 6 h, 12 h.
-# We expand with 3-hour steps so each capture is exactly one step.
+# Fans are visual-only 3-hour reachability bubbles extending across the route window.
 
-_FAN_DT = 3.0          # hours per fan step
-_N_FAN_HDG = 24        # headings tested (every 15°)
-_FAN_STEPS = [1, 2, 4] # steps → 3 h, 6 h, 12 h
+_SEARCH_DT = 1.0       # hours per search step for safe coastal routing
+_FAN_DT = 3.0          # hours for isochrone fan capture points
+_FAN_HDG = 24          # headings tested (every 15°)
+_FAN_STEPS = [3, 6, 12, 24, 48, 120]  # 3h, 6h, 12h, 24h, 48h, 120h
+_MAX_ROUTING_HOURS = 120.0
+_GRID_RES = 0.10      # degrees for pruning duplicate search nodes
 
 
 def _prune_frontier(lats, lons):
-    """Keep the most-advanced (min distance-to-dest is not relevant here;
-    we just deduplicate by 0.5° geographic cell, keeping farthest spread)."""
+    """Deduplicate a frontier by coarse geographic cells while preserving reach."""
     seen = set()
     out_lat, out_lon = [], []
     for la, lo in zip(lats, lons):
-        cell = (round(la * 2) / 2, round(lo * 2) / 2)
+        cell = (round(la / _GRID_RES), round(lo / _GRID_RES))
         if cell not in seen:
             seen.add(cell)
             out_lat.append(la)
@@ -170,34 +188,34 @@ def _prune_frontier(lats, lons):
 
 
 def expand_fans(start_lat, start_lon, end_lat, end_lon, bias) -> list:
-    """3-step fan expansion capturing reachability rings at 3 h, 6 h, 12 h."""
+    """Expand a 360° fan every 1h, capturing water-safe positions at 3h intervals."""
     f_lat = [start_lat]
     f_lon = [start_lon]
     fans = []
-    max_step = max(_FAN_STEPS)
+    max_step = int(_MAX_ROUTING_HOURS / _SEARCH_DT)
 
     for step in range(1, max_step + 1):
         new_lat, new_lon = [], []
         for la, lo in zip(f_lat, f_lon):
             twd, tws = wind_at(la, lo)
             cu, cv = current_at(la, lo)
-            for i in range(_N_FAN_HDG):
-                hdg = i * (360.0 / _N_FAN_HDG)
+            for i in range(_FAN_HDG):
+                hdg = i * (360.0 / _FAN_HDG)
                 twa = (hdg - twd + 360) % 360
                 if twa > 180:
                     twa = 360 - twa
                 bs = polar_speed(twa, tws, bias)
                 if bs < 0.5:
                     continue
-                nla, nlo = propagate(la, lo, hdg, bs, cu, cv, _FAN_DT)
-                if not in_ocean(nla, nlo):
+                endpoint = propagate_segment(la, lo, hdg, bs, cu, cv, _SEARCH_DT)
+                if endpoint is None:
                     continue
+                nla, nlo = endpoint
                 new_lat.append(nla)
                 new_lon.append(nlo)
 
         if not new_lat:
             break
-        # Capture ring at this step if it is a fan-capture step
         if step in _FAN_STEPS:
             fans.append([[float(la), float(lo)] for la, lo in zip(new_lat, new_lon)])
         f_lat, f_lon = _prune_frontier(new_lat, new_lon)
@@ -206,7 +224,7 @@ def expand_fans(start_lat, start_lon, end_lat, end_lon, bias) -> list:
 
 
 def eta_from_path(path: list, bias: float) -> float:
-    """Estimate ETA by integrating polar speed along the greedy path."""
+    """Estimate ETA by integrating polar speed along the routed path."""
     total_h = 0.0
     for i in range(len(path) - 1):
         la1, lo1 = path[i][0], path[i][1]
@@ -222,49 +240,105 @@ def eta_from_path(path: list, bias: float) -> float:
     return round(total_h, 1)
 
 
-# ── Greedy VMC path builder ────────────────────────────────────────
+def _snap_grid(lat, lon):
+    return round(lat / _GRID_RES) * _GRID_RES, round(lon / _GRID_RES) * _GRID_RES
 
-_PATH_DT = 1 / 3       # 20-minute steps
-_PATH_HDG = 36         # headings tested per step
-_PATH_MAX_PTS = 45
+
+def _heuristic_time(lat, lon, end_lat, end_lon):
+    return haversine_nm(lat, lon, end_lat, end_lon) / 24.0
+
+
+def _direct_goal_time(lat, lon, end_lat, end_lon, bias):
+    if not segment_in_water(lat, lon, end_lat, end_lon, allow_endpoint_land=True):
+        return float("inf")
+    dist = haversine_nm(lat, lon, end_lat, end_lon)
+    brg = bearing(lat, lon, end_lat, end_lon)
+    twd, tws = wind_at(lat, lon)
+    twa = (brg - twd + 360) % 360
+    if twa > 180:
+        twa = 360 - twa
+    bs = polar_speed(twa, tws, bias)
+    cu, cv = current_at(lat, lon)
+    rad = math.radians(brg)
+    sog = bs + cu * math.sin(rad) + cv * math.cos(rad)
+    sog = max(0.5, sog)
+    return dist / sog
 
 
 def build_path(start_lat, start_lon, end_lat, end_lon, bias) -> list:
-    """Greedy maximum-VMC path for route display."""
-    path = [[start_lat, start_lon]]
-    la, lo = start_lat, start_lon
-    max_steps = int(120 / _PATH_DT)
-    emit_every = max(1, max_steps // _PATH_MAX_PTS)
+    """Route using a Dijkstra/A* search over 1h ocean-safe nodes."""
+    max_steps = int(_MAX_ROUTING_HOURS / _SEARCH_DT)
+    start_key = (round(start_lat, 4), round(start_lon, 4), 0)
+    came_from = {start_key: None}
+    best_cost = {_snap_grid(start_lat, start_lon): 0.0}
+    frontier = [(_heuristic_time(start_lat, start_lon, end_lat, end_lon), 0.0, 0, start_lat, start_lon)]
 
-    for step in range(max_steps):
-        dist = haversine_nm(la, lo, end_lat, end_lon)
-        if dist < 8.0:
-            path.append([end_lat, end_lon])
+    goal_time = float("inf")
+    goal_prev = None
+
+    while frontier:
+        _, cost, step, la, lo = heapq.heappop(frontier)
+        grid = _snap_grid(la, lo)
+        if cost > best_cost.get(grid, float("inf")):
+            continue
+        if cost >= goal_time:
             break
+
+        direct_time = _direct_goal_time(la, lo, end_lat, end_lon, bias)
+        if direct_time < float("inf"):
+            total = cost + direct_time
+            if total < goal_time:
+                goal_time = total
+                goal_prev = (round(la, 4), round(lo, 4), step)
+
+        if step >= max_steps:
+            continue
+
         twd, tws = wind_at(la, lo)
         cu, cv = current_at(la, lo)
-        best_vmc, best_la, best_lo = -1e9, la, lo
-        for i in range(_PATH_HDG):
-            hdg = i * (360.0 / _PATH_HDG)
+        for i in range(_FAN_HDG):
+            hdg = i * (360.0 / _FAN_HDG)
             twa = (hdg - twd + 360) % 360
             if twa > 180:
                 twa = 360 - twa
             bs = polar_speed(twa, tws, bias)
-            if bs < 0.3:
+            if bs < 0.5:
                 continue
-            nla, nlo = propagate(la, lo, hdg, bs, cu, cv, _PATH_DT)
-            if not in_ocean(nla, nlo):
+            endpoint = propagate_segment(la, lo, hdg, bs, cu, cv, _SEARCH_DT)
+            if endpoint is None:
                 continue
-            ndist = haversine_nm(nla, nlo, end_lat, end_lon)
-            vmc = (dist - ndist) / _PATH_DT
-            if vmc > best_vmc:
-                best_vmc, best_la, best_lo = vmc, nla, nlo
-        la, lo = best_la, best_lo
-        if step % emit_every == 0:
-            path.append([la, lo])
+            nla, nlo = endpoint
+            new_cost = cost + _SEARCH_DT
+            new_grid = _snap_grid(nla, nlo)
+            if new_cost + 1e-6 >= best_cost.get(new_grid, float("inf")):
+                continue
+            best_cost[new_grid] = new_cost
+            node_key = (round(nla, 4), round(nlo, 4), step + 1)
+            came_from[node_key] = (round(la, 4), round(lo, 4), step)
+            heapq.heappush(
+                frontier,
+                (
+                    new_cost + _heuristic_time(nla, nlo, end_lat, end_lon),
+                    new_cost,
+                    step + 1,
+                    nla,
+                    nlo,
+                ),
+            )
 
-    if not path or path[-1] != [end_lat, end_lon]:
+    path = [[start_lat, start_lon]]
+    if goal_prev is not None:
+        node = goal_prev
+        trail = []
+        while node is not None:
+            trail.append([float(node[0]), float(node[1])])
+            node = came_from.get(node)
+        path = trail[::-1]
+        if path[-1] != [end_lat, end_lon]:
+            path.append([end_lat, end_lon])
+    else:
         path.append([end_lat, end_lon])
+
     return path
 
 
