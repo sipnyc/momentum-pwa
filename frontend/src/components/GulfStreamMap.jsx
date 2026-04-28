@@ -305,8 +305,15 @@ const GulfStreamMap = () => {
   const [startPos, setStartPos] = useState([38.9784, -76.4922]);
   const [routeData, setRouteData] = useState(null);
   const [endPos, setEndPos] = useState([32.3078, -64.7505]);
-  const routeBounds = [[33.6, -79.0], [39.8, -63.8]];
-  const routeCenter = [36.7, -71.4];
+  const noRoute = !routeData || routeData.length < 2;
+  const routeBounds = [
+    [Math.min(startPos[0], endPos[0]) - 2.2, Math.min(startPos[1], endPos[1]) - 2.2],
+    [Math.max(startPos[0], endPos[0]) + 2.2, Math.max(startPos[1], endPos[1]) + 2.2],
+  ];
+  const routeCenter = [
+    (startPos[0] + endPos[0]) / 2,
+    (startPos[1] + endPos[1]) / 2,
+  ];
   const [meta, setMeta] = useState({});
   const [windField, setWindField] = useState([]);
   const [currentField, setCurrentField] = useState({ vectors: [] });
@@ -328,7 +335,9 @@ const GulfStreamMap = () => {
     ICON: '±1.7 kt',
   };
 
-  const API_BASE = window.location.origin.replace('-5173', '-8000');
+  const API_BASE = window.location.origin.includes('5173')
+    ? window.location.origin.replace('5173', '8000')
+    : 'http://localhost:8000';
 
   const fetchRoute = async (startLat, startLon, finishLat, finishLon) => {
     setLoading(true);
@@ -339,7 +348,7 @@ const GulfStreamMap = () => {
         body: JSON.stringify({ start_lat: startLat, start_lon: startLon, end_lat: finishLat, end_lon: finishLon, forecast_hour: forecastHour, bias })
       });
       const data = await response.json();
-      setRouteData(data.points);
+      setRouteData(Array.isArray(data.points) ? data.points : []);
       setIsochroneFans(data.isochrone_fans || []);
       setMeta(data.metadata || {});
       setWindField((data.metadata && data.metadata.wind_field) || []);
@@ -348,6 +357,9 @@ const GulfStreamMap = () => {
       setSeaTempData((data.metadata && data.metadata.sea_temp) || null);
     } catch (err) {
       console.error("Link to Brain failed", err);
+      setRouteData([]);
+      setIsochroneFans([]);
+      setMeta({ status: 'Route request failed' });
     } finally {
       setLoading(false);
     }
@@ -691,7 +703,25 @@ const GulfStreamMap = () => {
           <Marker position={startPos}><Popup>Current Position</Popup></Marker>
           <Marker position={endPos}><Popup>Finish Point</Popup></Marker>
           <IsochroneFans fans={isochroneFans} startPos={startPos} />
-          {routeData && <Polyline positions={routeData} color="#34d399" weight={4} opacity={0.9} />}
+          {routeData && routeData.length > 1 && <Polyline positions={routeData} color="#34d399" weight={4} opacity={0.9} />}
+          {noRoute && (
+            <div style={{
+              position: 'absolute',
+              top: '50%',
+              left: '50%',
+              transform: 'translate(-50%, -50%)',
+              zIndex: 1200,
+              padding: '12px 16px',
+              background: 'rgba(0,0,0,0.8)',
+              color: '#ff7f50',
+              borderRadius: '12px',
+              border: '1px solid rgba(255,127,80,0.35)',
+              fontWeight: 700,
+              pointerEvents: 'none',
+            }}>
+              NO WATER-ONLY ROUTE FOUND
+            </div>
+          )}
           <WindStreamlineOverlay active={showWindStreamlines} forecastHour={forecastHour} windGrid={windGrid} />
           {showWindStreamlines && windBarbs().map((line, idx) => (
             <Polyline

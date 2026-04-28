@@ -225,6 +225,8 @@ def expand_fans(start_lat, start_lon, end_lat, end_lon, bias) -> list:
 
 def eta_from_path(path: list, bias: float) -> float:
     """Estimate ETA by integrating polar speed along the routed path."""
+    if len(path) < 2:
+        return float("inf")
     total_h = 0.0
     for i in range(len(path) - 1):
         la1, lo1 = path[i][0], path[i][1]
@@ -326,19 +328,18 @@ def build_path(start_lat, start_lon, end_lat, end_lon, bias) -> list:
                 ),
             )
 
-    path = [[start_lat, start_lon]]
-    if goal_prev is not None:
-        node = goal_prev
-        trail = []
-        while node is not None:
-            trail.append([float(node[0]), float(node[1])])
-            node = came_from.get(node)
-        path = trail[::-1]
-        if path[-1] != [end_lat, end_lon]:
-            path.append([end_lat, end_lon])
-    else:
-        path.append([end_lat, end_lon])
+    if goal_prev is None:
+        return []
 
+    path = [[start_lat, start_lon]]
+    node = goal_prev
+    trail = []
+    while node is not None:
+        trail.append([float(node[0]), float(node[1])])
+        node = came_from.get(node)
+    path = trail[::-1]
+    if path[-1] != [end_lat, end_lon]:
+        path.append([end_lat, end_lon])
     return path
 
 
@@ -443,7 +444,12 @@ async def isochrone_route(req: RouteRequest):
     bs_polar = polar_speed(twa, tws)
     _, sweet_bs = best_polar_speed(tws)
 
-    eta_display = round(eta_h, 1) if eta_h < float("inf") else round(dist / 8.0, 1)
+    if not path:
+        eta_display = None
+        status_text = "No water-only route found"
+    else:
+        eta_display = round(eta_h, 1)
+        status_text = f"ETA {eta_display}h | {round(dist)}nm | Bias {round(req.bias * 100)}%"
     bias_pct = round(req.bias * 100)
 
     wind_field = build_wind_field(req.forecast_hour)
@@ -459,7 +465,7 @@ async def isochrone_route(req: RouteRequest):
             "twd": round(twd, 0),
             "tws": round(tws, 1),
             "twa": round(twa, 0),
-            "status": f"ETA {eta_display}h | {round(dist)}nm | Bias {bias_pct}%",
+            "status": status_text,
             "eta_adjusted_h": eta_display,
             "distance_nm": round(dist, 1),
             "gs_current_kts": gs_kts,
