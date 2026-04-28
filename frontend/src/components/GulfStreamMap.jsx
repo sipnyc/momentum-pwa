@@ -67,13 +67,21 @@ const GulfStreamMap = () => {
     const twa = parseFloat(String(meta.twa || '').replace(/[^0-9.+-]/g, '')) || 110;
     const tws = parseFloat(String(meta.tws || '').replace(/[^0-9.+-]/g, '')) || 18;
 
-    if (twa >= 100 && twa <= 140 && tws >= 15) {
-      return '130% Genoa - Pole to mast';
+    if (tws >= 8 && twa >= 80 && twa <= 155) {
+      return 'Main + 130% Genoa';
     }
-    if (twa < 100) {
-      return 'Code 0 / A2 - Outboard sheet';
+    if (tws >= 15 && twa > 155) {
+      return 'Main + 130% Genoa (ease sheet)';
     }
-    return '100% Jib - Narrow sheeting';
+    if (tws < 8) {
+      return 'Main + 130% Genoa (light air trim)';
+    }
+    return 'Main + 130% Genoa';
+  };
+
+  const getRecommendedBearing = () => {
+    const heading = parseHeading(meta.vmc_heading, parseHeading(meta.opt_heading, 0));
+    return heading;
   };
 
   const getPolarTarget = () => {
@@ -131,6 +139,27 @@ const GulfStreamMap = () => {
     return [{ lat: startPos[0], lon: startPos[1], u, v }];
   };
 
+  const computeWindGrid = (field) => {
+    const base = field && field.length > 0 ? field : [{ lat: startPos[0], lon: startPos[1], u: 0, v: 0 }];
+    const rows = 8;
+    const cols = 14;
+    const points = [];
+
+    for (let i = 0; i < rows; i += 1) {
+      const lat = -60 + i * 15;
+      for (let j = 0; j < cols; j += 1) {
+        const lon = -180 + j * 25;
+        const nearest = base.reduce((best, item) => {
+          const dist = ((item.lat - lat) ** 2) + ((item.lon - lon) ** 2);
+          return dist < best.dist ? { item, dist } : best;
+        }, { item: base[0], dist: Infinity }).item;
+        points.push({ lat, lon, u: nearest.u || 0, v: nearest.v || 0 });
+      }
+    }
+
+    return points;
+  };
+
   const currentSpeedColor = (speed, pulse) => {
     if (speed <= 1) return 'rgba(40, 112, 255, 0.10)';
     if (speed <= 2) return 'rgba(34, 197, 94, 0.16)';
@@ -163,21 +192,22 @@ const GulfStreamMap = () => {
       canvasRef.current = canvas;
 
       const field = normalizeWindField();
-      const particles = field.flatMap((point, index) => {
+      const grid = computeWindGrid(field);
+      const particles = grid.flatMap((point) => {
         const speed = Math.sqrt(point.u * point.u + point.v * point.v) || 2;
         const angle = Math.atan2(-point.v, point.u);
-        const baseSpeed = Math.max(0.6, Math.min(3.8, speed * 0.16));
-        const color = speed > 14 ? 'rgba(255, 100, 60, 0.9)' : speed > 8 ? 'rgba(125, 211, 252, 0.88)' : 'rgba(99, 102, 241, 0.76)';
-        return Array.from({ length: 20 }, () => ({
-          lat: point.lat + (Math.random() - 0.5) * 0.45,
-          lon: point.lon + (Math.random() - 0.5) * 0.45,
+        const baseSpeed = Math.max(0.6, Math.min(4.6, speed * 0.16));
+        const color = speed > 14 ? 'rgba(255, 100, 60, 0.95)' : speed > 8 ? 'rgba(125, 211, 252, 0.92)' : 'rgba(99, 102, 241, 0.78)';
+        return Array.from({ length: 22 }, () => ({
+          lat: point.lat + (Math.random() - 0.5) * 3.2,
+          lon: point.lon + (Math.random() - 0.5) * 3.2,
           angle,
           baseSpeed,
           color,
-          length: 22 + Math.random() * 12,
-          xOffset: (Math.random() - 0.5) * 30,
-          yOffset: (Math.random() - 0.5) * 30,
-          alpha: 0.16 + Math.random() * 0.36,
+          length: 26 + Math.random() * 14,
+          xOffset: (Math.random() - 0.5) * 60,
+          yOffset: (Math.random() - 0.5) * 60,
+          alpha: 0.2 + Math.random() * 0.5,
         }));
       });
       particlesRef.current = particles;
@@ -298,7 +328,7 @@ const GulfStreamMap = () => {
         }
 
         if (showCurrent && currentZones && currentZones.length > 0) {
-          currentZones.forEach((zone) => {
+          currentZones.forEach((zone, idx) => {
             if (!zone.bounds || zone.bounds.length < 2) return;
             const intensity = Math.min(1, Math.max(0, zone.intensity || 0.25));
             const speed = intensity * 5;
@@ -307,8 +337,8 @@ const GulfStreamMap = () => {
             const coords = zone.bounds.map((coord) => map.latLngToContainerPoint(L.latLng(coord[0], coord[1])));
             const centroid = coords.reduce((acc, pt) => ({ x: acc.x + pt.x, y: acc.y + pt.y }), { x: 0, y: 0 });
             centroid.x /= coords.length; centroid.y /= coords.length;
-            const radius = Math.max(...coords.map((pt) => Math.hypot(pt.x - centroid.x, pt.y - centroid.y))) * 1.1;
-            const gradient = ctx.createRadialGradient(centroid.x, centroid.y, radius * 0.1, centroid.x, centroid.y, radius);
+            const radius = Math.max(...coords.map((pt) => Math.hypot(pt.x - centroid.x, pt.y - centroid.y))) * 1.4;
+            const gradient = ctx.createRadialGradient(centroid.x, centroid.y, radius * 0.15, centroid.x, centroid.y, radius);
             gradient.addColorStop(0, color);
             gradient.addColorStop(1, 'rgba(255,255,255,0)');
             ctx.beginPath();
@@ -318,6 +348,40 @@ const GulfStreamMap = () => {
             });
             ctx.closePath();
             ctx.fillStyle = gradient;
+            ctx.fill();
+
+            const eddyPoints = Array.from({ length: 12 }, (_, n) => {
+              const angle = (n / 12) * Math.PI * 2 + (idx % 2 ? Math.PI / 8 : 0);
+              return {
+                x: centroid.x + Math.cos(angle) * radius * 0.45,
+                y: centroid.y + Math.sin(angle) * radius * 0.45,
+              };
+            });
+            ctx.beginPath();
+            eddyPoints.forEach((point, index) => {
+              if (index === 0) ctx.moveTo(point.x, point.y);
+              else ctx.lineTo(point.x, point.y);
+            });
+            ctx.closePath();
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([8, 10]);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            const arrowPos = eddyPoints[Math.floor(eddyPoints.length / 2)];
+            const arrowAngle = idx % 2 === 0 ? Math.PI * 0.4 : Math.PI * 1.6;
+            const arrowSize = 12;
+            ctx.beginPath();
+            ctx.moveTo(arrowPos.x, arrowPos.y);
+            ctx.lineTo(arrowPos.x + Math.cos(arrowAngle) * arrowSize, arrowPos.y + Math.sin(arrowAngle) * arrowSize);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(arrowPos.x + Math.cos(arrowAngle) * arrowSize, arrowPos.y + Math.sin(arrowAngle) * arrowSize);
+            ctx.lineTo(arrowPos.x + Math.cos(arrowAngle + 0.5) * (arrowSize * 0.45), arrowPos.y + Math.sin(arrowAngle + 0.5) * (arrowSize * 0.45));
+            ctx.lineTo(arrowPos.x + Math.cos(arrowAngle - 0.5) * (arrowSize * 0.45), arrowPos.y + Math.sin(arrowAngle - 0.5) * (arrowSize * 0.45));
+            ctx.closePath();
+            ctx.fillStyle = 'rgba(255,255,255,0.32)';
             ctx.fill();
           });
         }
@@ -337,53 +401,23 @@ const GulfStreamMap = () => {
   };
 
   const windBarbs = () => {
-    const field = (windField && Array.isArray(windField) ? windField : []).filter((point) => point && typeof point.lat === 'number');
+    const field = normalizeWindField();
+    const grid = computeWindGrid(field);
     const timeFactor = 0.7 + 0.3 * Math.sin((forecastHour / 24) * Math.PI);
 
-    if (field.length === 0) {
-      const windDirValue = parseWindDirection(meta.wind_dir);
-      const windSpeedValue = parseFloat(String(meta.wind_speed || '').replace(/[^0-9.+-]/g, '')) || 0;
-      const bearing = ((windDirValue + 180) % 360) * Math.PI / 180;
-      const scaledSpeed = windSpeedValue * timeFactor;
-      const arrowLength = 0.18 + scaledSpeed * 0.015;
-      const dx = Math.sin(bearing) * arrowLength;
-      const dy = Math.cos(bearing) * arrowLength;
-      const headLength = arrowLength * 0.35;
-      const headAngleA = bearing + Math.PI * 0.75;
-      const headAngleB = bearing - Math.PI * 0.75;
-
-      const grid = [
-        [-2.0, -3.0], [-2.0, 0], [-2.0, 3.0],
-        [0, -3.0], [0, 0], [0, 3.0],
-        [2.0, -3.0], [2.0, 0], [2.0, 3.0],
-      ];
-
-      return grid.flatMap(([latOff, lonOff]) => {
-        const start = [startPos[0] + latOff, startPos[1] + lonOff];
-        const end = [start[0] + dy, start[1] + dx];
-        const head1 = [end[0] + Math.cos(headAngleA) * headLength, end[1] + Math.sin(headAngleA) * headLength];
-        const head2 = [end[0] + Math.cos(headAngleB) * headLength, end[1] + Math.sin(headAngleB) * headLength];
-        return [
-          { positions: [start, end], color: '#7dd3fc', weight: 2 },
-          { positions: [end, head1], color: '#7dd3fc', weight: 2 },
-          { positions: [end, head2], color: '#7dd3fc', weight: 2 },
-        ];
-      });
-    }
-
-    return field.flatMap((point) => {
+    return grid.flatMap((point) => {
       const u = point.u || 0;
       const v = point.v || 0;
       const windSpeed = Math.sqrt(u * u + v * v) * timeFactor;
       const windDir = (Math.atan2(-u, -v) * 180 / Math.PI + 360) % 360;
       const bearing = ((windDir + 180) % 360) * Math.PI / 180;
-      const arrowLength = 0.18 + Math.min(windSpeed, 30) * 0.01;
+      const arrowLength = 0.25 + Math.min(windSpeed, 28) * 0.012;
       const dx = Math.sin(bearing) * arrowLength;
       const dy = Math.cos(bearing) * arrowLength;
-      const headLength = arrowLength * 0.35;
+      const headLength = arrowLength * 0.38;
       const headAngleA = bearing + Math.PI * 0.75;
       const headAngleB = bearing - Math.PI * 0.75;
-      const color = windSpeed > 18 ? '#ff9f43' : windSpeed > 10 ? '#7dd3fc' : '#93c5fd';
+      const color = windSpeed > 18 ? '#ffb347' : windSpeed > 10 ? '#7dd3fc' : '#93c5fd';
 
       const start = [point.lat, point.lon];
       const end = [start[0] + dy, start[1] + dx];
@@ -499,6 +533,9 @@ const GulfStreamMap = () => {
             <p style={{ fontSize: '2rem', fontWeight: 'bold', color: '#00ff00', fontFamily: 'monospace', letterSpacing: '1px', margin: '10px 0 0' }}>{meta.vmg ? `${meta.vmg}` : '-- kts'}</p>
             <p style={{ color: '#7f7f7f', margin: '10px 0 0', fontSize: '0.85rem' }}>Current Set / Drift</p>
             <p style={{ fontSize: '1rem', fontWeight: 700, color: '#00ff00', margin: '6px 0 0' }}>{meta.current_velocity ? `${meta.current_velocity} / ${meta.wind_dir || '--'}` : '-- / --'}</p>
+            <p style={{ color: '#7f7f7f', margin: '14px 0 0 0', fontSize: '0.75rem', letterSpacing: '1px' }}>Fastest-path bearing</p>
+            <p style={{ fontSize: '1.05rem', fontWeight: 700, color: '#7bdfff', margin: '6px 0 0' }}>{meta.vmc_heading ? `${meta.vmc_heading}°` : '--'}</p>
+            <p style={{ color: '#7f7f7f', margin: '10px 0 0', fontSize: '0.75rem' }}>Target VMG {meta.vmc_vmg || '--'} </p>
           </div>
 
           <div style={{ padding: '18px', background: '#051205', borderRadius: '14px', boxShadow: '0 0 30px rgba(0, 255, 0, 0.18)' }}>
@@ -533,6 +570,14 @@ const GulfStreamMap = () => {
           <Marker position={[32.3078, -64.7505]}><Popup>Bermuda Finish</Popup></Marker>
           {routeData && <Polyline positions={routeData} color="#00ffff" weight={4} />}
           <WindStreamlineOverlay active={showWindStreamlines} />
+          {showWindStreamlines && windBarbs().map((line, idx) => (
+            <Polyline
+              key={`wind-barb-${idx}`}
+              positions={line.positions}
+              pathOptions={{ color: line.color, weight: line.weight, opacity: 0.95 }}
+            />
+          ))}
+          {showCurrentHeatmap && currentHeatmapLayers()}
           <WeatherHeatmapOverlay showCurrent={showCurrentHeatmap} showTemp={showSeaTemp} />
         </MapContainer>
         <div
@@ -583,9 +628,11 @@ const GulfStreamMap = () => {
             <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               <div style={{ position: 'absolute', width: '4px', height: '80px', background: 'rgba(0,255,0,0.75)', transform: `rotate(${getCompassData().cog}deg) translateY(-22px)`, transformOrigin: 'center bottom' }} />
               <div style={{ position: 'absolute', width: '4px', height: '60px', background: 'rgba(0,255,0,0.4)', transform: `rotate(${getCompassData().opt}deg) translateY(-18px)`, transformOrigin: 'center bottom' }} />
+              <div style={{ position: 'absolute', width: '4px', height: '56px', background: 'rgba(123, 221, 255, 0.92)', transform: `rotate(${getRecommendedBearing()}deg) translateY(-18px)`, transformOrigin: 'center bottom' }} />
               <div style={{ position: 'absolute', bottom: '16px', left: '50%', transform: 'translateX(-50%)', textAlign: 'center' }}>
                 <div style={{ color: '#00ff00', fontSize: '0.8rem', fontWeight: '700' }}>COG {meta.cog || '--'}</div>
                 <div style={{ color: '#7f7f7f', fontSize: '0.7rem' }}>OPT {meta.opt_heading || '--'}</div>
+                <div style={{ color: '#7bdfff', fontSize: '0.7rem' }}>VMC {meta.vmc_heading || '--'}</div>
               </div>
             </div>
           </div>
