@@ -141,14 +141,14 @@ const GulfStreamMap = () => {
 
   const computeWindGrid = (field) => {
     const base = field && field.length > 0 ? field : [{ lat: startPos[0], lon: startPos[1], u: 0, v: 0 }];
-    const rows = 8;
-    const cols = 14;
+    const rows = 16;
+    const cols = 28;
     const points = [];
 
     for (let i = 0; i < rows; i += 1) {
-      const lat = -60 + i * 15;
+      const lat = -75 + i * 10;
       for (let j = 0; j < cols; j += 1) {
-        const lon = -180 + j * 25;
+        const lon = -180 + j * 13;
         const nearest = base.reduce((best, item) => {
           const dist = ((item.lat - lat) ** 2) + ((item.lon - lon) ** 2);
           return dist < best.dist ? { item, dist } : best;
@@ -196,17 +196,19 @@ const GulfStreamMap = () => {
       const particles = grid.flatMap((point) => {
         const speed = Math.sqrt(point.u * point.u + point.v * point.v) || 2;
         const angle = Math.atan2(-point.v, point.u);
-        const baseSpeed = Math.max(0.6, Math.min(4.6, speed * 0.16));
-        const color = speed > 14 ? 'rgba(255, 100, 60, 0.95)' : speed > 8 ? 'rgba(125, 211, 252, 0.92)' : 'rgba(99, 102, 241, 0.78)';
-        return Array.from({ length: 22 }, () => ({
-          lat: point.lat + (Math.random() - 0.5) * 3.2,
-          lon: point.lon + (Math.random() - 0.5) * 3.2,
+        const baseSpeed = Math.max(0.6, Math.min(4.6, speed * 0.14));
+        const color = speed > 14 ? 'rgba(255, 80, 40, 0.96)' : speed > 8 ? 'rgba(125, 211, 252, 0.92)' : 'rgba(99, 102, 241, 0.82)';
+        return Array.from({ length: 12 }, () => ({
+          lat: point.lat + (Math.random() - 0.5) * 2.8,
+          lon: point.lon + (Math.random() - 0.5) * 2.8,
+          u: point.u,
+          v: point.v,
           angle,
           baseSpeed,
           color,
-          length: 26 + Math.random() * 14,
-          xOffset: (Math.random() - 0.5) * 60,
-          yOffset: (Math.random() - 0.5) * 60,
+          length: 24 + Math.random() * 16,
+          xOffset: (Math.random() - 0.5) * 42,
+          yOffset: (Math.random() - 0.5) * 42,
           alpha: 0.2 + Math.random() * 0.5,
         }));
       });
@@ -231,11 +233,13 @@ const GulfStreamMap = () => {
 
         const timeFactor = 0.55 + 0.45 * Math.sin((forecastHour / 24) * Math.PI);
         particlesRef.current.forEach((particle) => {
+          particle.lat += particle.v * 0.0018 * timeFactor;
+          particle.lon += particle.u * 0.0018 * timeFactor / Math.max(Math.cos(particle.lat * Math.PI / 180), 0.05);
           const latLng = L.latLng(particle.lat, particle.lon);
           const start = map.latLngToContainerPoint(latLng);
           const px = start.x + particle.xOffset;
           const py = start.y + particle.yOffset;
-          const speed = particle.baseSpeed * timeFactor;
+          const speed = particle.baseSpeed * timeFactor * (0.9 + Math.min(0.3, Math.sqrt(particle.u * particle.u + particle.v * particle.v) * 0.04));
           const xEnd = px + Math.cos(particle.angle) * speed * particle.length;
           const yEnd = py + Math.sin(particle.angle) * speed * particle.length;
 
@@ -431,20 +435,29 @@ const GulfStreamMap = () => {
     });
   };
 
-  const currentHeatmapLayers = () => currentZones.map((zone, idx) => {
-    if (!zone || !zone.bounds || zone.bounds.length < 2) return null;
-    const intensity = Math.min(1, Math.max(0, zone.intensity || 0.3));
-    const timeIntensity = intensity * (0.75 + 0.25 * Math.cos((forecastHour / 24) * Math.PI));
-    const fillColor = timeIntensity > 0.6 ? '#ff4d4d' : timeIntensity > 0.45 ? '#ff9a56' : '#4d8cff';
-    const fillOpacity = 0.16 + timeIntensity * 0.28;
-    const pathOptions = { color: fillColor, fillColor, fillOpacity, weight: 0 };
+  const currentHeatmapLayers = () => {
+    const maxIntensity = currentZones.reduce((max, zone) => Math.max(max, zone?.intensity || 0), 0);
+    return currentZones.map((zone, idx) => {
+      if (!zone || !zone.bounds || zone.bounds.length < 2) return null;
+      const intensity = Math.min(1, Math.max(0, zone.intensity || 0.3));
+      const isFastest = zone.intensity === maxIntensity;
+      const timeIntensity = intensity * (0.75 + 0.25 * Math.cos((forecastHour / 24) * Math.PI));
+      const fillColor = isFastest ? 'rgba(255, 34, 34, 0.28)' : timeIntensity > 0.6 ? '#ff4d4d' : timeIntensity > 0.45 ? '#ff9a56' : '#4d8cff';
+      const pathOptions = {
+        color: isFastest ? '#ff0000' : fillColor,
+        fillColor,
+        fillOpacity: isFastest ? 0.32 : 0.18,
+        weight: isFastest ? 2 : 0,
+        dashArray: isFastest ? '6 8' : undefined,
+      };
 
-    return zone.bounds.length > 2 ? (
-      <Polygon key={`current-zone-${idx}`} positions={zone.bounds} pathOptions={pathOptions} />
-    ) : (
-      <Rectangle key={`current-zone-${idx}`} bounds={zone.bounds} pathOptions={pathOptions} />
-    );
-  });
+      return zone.bounds.length > 2 ? (
+        <Polygon key={`current-zone-${idx}`} positions={zone.bounds} pathOptions={pathOptions} />
+      ) : (
+        <Rectangle key={`current-zone-${idx}`} bounds={zone.bounds} pathOptions={pathOptions} />
+      );
+    });
+  };
 
   const MapEvents = () => {
     useMapEvents({
@@ -533,9 +546,15 @@ const GulfStreamMap = () => {
             <p style={{ fontSize: '2rem', fontWeight: 'bold', color: '#00ff00', fontFamily: 'monospace', letterSpacing: '1px', margin: '10px 0 0' }}>{meta.vmg ? `${meta.vmg}` : '-- kts'}</p>
             <p style={{ color: '#7f7f7f', margin: '10px 0 0', fontSize: '0.85rem' }}>Current Set / Drift</p>
             <p style={{ fontSize: '1rem', fontWeight: 700, color: '#00ff00', margin: '6px 0 0' }}>{meta.current_velocity ? `${meta.current_velocity} / ${meta.wind_dir || '--'}` : '-- / --'}</p>
+            {meta.current_compensation ? (
+              <p style={{ color: '#ff7f50', margin: '10px 0 0', fontSize: '0.82rem', fontWeight: 700 }}>{meta.current_compensation}</p>
+            ) : null}
             <p style={{ color: '#7f7f7f', margin: '14px 0 0 0', fontSize: '0.75rem', letterSpacing: '1px' }}>Fastest-path bearing</p>
             <p style={{ fontSize: '1.05rem', fontWeight: 700, color: '#7bdfff', margin: '6px 0 0' }}>{meta.vmc_heading ? `${meta.vmc_heading}°` : '--'}</p>
             <p style={{ color: '#7f7f7f', margin: '10px 0 0', fontSize: '0.75rem' }}>Target VMG {meta.vmc_vmg || '--'} </p>
+            {meta.fastest_current_area ? (
+              <p style={{ color: '#ff7373', margin: '10px 0 0', fontSize: '0.75rem' }}>Hot current zone: {meta.fastest_current_area.name || 'Gulf Stream Core'}</p>
+            ) : null}
           </div>
 
           <div style={{ padding: '18px', background: '#051205', borderRadius: '14px', boxShadow: '0 0 30px rgba(0, 255, 0, 0.18)' }}>

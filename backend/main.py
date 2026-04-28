@@ -106,18 +106,22 @@ def extract_current_field():
                         "u": float(u[i, j]) if i < u.shape[0] and j < u.shape[1] else 0.0,
                         "v": float(v[i, j]) if i < v.shape[0] and j < v.shape[1] else 0.0,
                     })
-            return {"zones": current_zones, "has_vector_data": True, "vectors": vectors}
+            max_zone = max(current_zones, key=lambda z: z.get("intensity", 0.0))
+            return {"zones": current_zones, "has_vector_data": True, "vectors": vectors, "fastest_zone": max_zone}
 
-        return {"zones": current_zones, "has_vector_data": False, "vectors": []}
+        max_zone = max(current_zones, key=lambda z: z.get("intensity", 0.0))
+        return {"zones": current_zones, "has_vector_data": False, "vectors": [], "fastest_zone": max_zone}
     except Exception as e:
         print(f"Current field extraction failed: {e}")
+        max_zone = max(current_zones, key=lambda z: z.get("intensity", 0.0))
         return {
             "zones": [
                 {"bounds": [[33.5, -75.5], [34.2, -73.5]], "intensity": 0.85, "name": "Gulf Stream Core"},
                 {"bounds": [[32.7, -72.8], [33.3, -71.2]], "intensity": 0.65, "name": "Meander Zone"},
             ],
             "has_vector_data": False,
-            "vectors": []
+            "vectors": [],
+            "fastest_zone": max_zone
         }
 
 def extract_sea_temp():
@@ -226,6 +230,34 @@ async def calculate_route(data: dict):
     def polar_speed(twa, tws):
         return max(0.1, tws * polar_factor(twa))
 
+    def nearest_current_vector(lat_pt, lon_pt):
+        if not current_field.get("has_vector_data") or not current_field.get("vectors"):
+            return 0.0, 0.0
+        best = min(
+            current_field["vectors"],
+            key=lambda item: (item.get("lat", 0.0) - lat_pt) ** 2 + (item.get("lon", 0.0) - lon_pt) ** 2
+        )
+        return best.get("u", 0.0), best.get("v", 0.0)
+
+    def find_vmc_heading(destination_heading, current_u=0.0, current_v=0.0):
+        dest_rad = math.radians(destination_heading)
+        dest_unit_x = math.sin(dest_rad)
+        dest_unit_y = math.cos(dest_rad)
+        best = {"heading": destination_heading, "score": -999.0, "speed": 0.0, "twa": 0.0}
+        for offset in range(-75, 76, 5):
+            heading = (destination_heading + offset) % 360
+            twa = angular_difference(wind_dir, heading)
+            speed = polar_speed(twa, tws)
+            rad = math.radians(heading)
+            boat_x = math.sin(rad) * speed
+            boat_y = math.cos(rad) * speed
+            ground_x = boat_x + current_u
+            ground_y = boat_y + current_v
+            score = ground_x * dest_unit_x + ground_y * dest_unit_y
+            if score > best["score"]:
+                best = {"heading": heading, "score": score, "speed": speed, "twa": twa, "ground_speed": score}
+        return best
+
     def predicted_wind_dir(base_dir, hour_offset):
         return (base_dir + (hour_offset / 24.0) * 40.0) % 360
 
@@ -252,17 +284,6 @@ async def calculate_route(data: dict):
             "suggested_heading": round(current_heading, 1),
         }
 
-    def find_vmc_heading(destination_heading):
-        best = {"heading": destination_heading, "score": -999.0, "speed": 0.0, "twa": 0.0}
-        for offset in range(-70, 71, 5):
-            heading = (destination_heading + offset) % 360
-            twa = angular_difference(wind_dir, heading)
-            speed = polar_speed(twa, tws)
-            score = speed * math.cos(math.radians(angular_difference(destination_heading, heading)))
-            if score > best["score"]:
-                best = {"heading": heading, "score": score, "speed": speed, "twa": twa}
-        return best
-
     def compute_performance_bias(actual_sog, predicted_polar):
         if actual_sog is not None and actual_sog > 0:
             return round((actual_sog / max(predicted_polar, 0.1)) * 100.0, 1)
@@ -271,9 +292,7 @@ async def calculate_route(data: dict):
     def is_deep_water(lat_pt, lon_pt):
         if lat_pt is None or lon_pt is None:
             return False
-        if globe.is_land(lat_pt, lon_pt):
-            return False
-        return globe.is_ocean(lat_pt, lon_pt)
+        return not globe.is_land(lat_pt, lon_pt)
 
     def candidate_point(lat_pt, lon_pt, heading, step_deg=0.35):
         rad = math.radians(heading)
@@ -301,8 +320,19 @@ async def calculate_route(data: dict):
 
     dest_lat, dest_lon = 32.3078, -64.7505
     initial_heading = heading_between(lat, lon, dest_lat, dest_lon)
-    vmc_solution = find_vmc_heading(initial_heading)
+    current_u, current_v = nearest_current_vector(lat, lon)
+    vmc_solution = find_vmc_heading(initial_heading, current_u, current_v)
     next_maneuver = next_maneuver_forecast(vmc_solution["heading"], wind_dir)
+
+    current_compensation = None
+    if current_v > 0.25:
+        current_compensation = "Current pushing north — steer slightly south to compensate."
+    elif current_v < -0.25:
+        current_compensation = "Current pushing south — steer slightly north to compensate."
+    elif current_u > 0.25:
+        current_compensation = "Current pushing east — steer slightly west to compensate."
+    elif current_u < -0.25:
+        current_compensation = "Current pushing west — steer slightly east to compensate."
 
     points = [[lat, lon]]
     curr_lat, curr_lon = lat, lon
@@ -313,38 +343,62 @@ async def calculate_route(data: dict):
 
     for _ in range(20):
         dest_heading = heading_between(curr_lat, curr_lon, dest_lat, dest_lon)
-        best_score = -1.0
+        current_u, current_v = nearest_current_vector(curr_lat, curr_lon)
+        vmc = find_vmc_heading(dest_heading, current_u, current_v)
+        best_score = -999.0
         best_point = None
-        best_heading = dest_heading
-        best_twa = last_twa
-        best_speed = 0.0
+        best_heading = vmc["heading"]
+        best_twa = vmc["twa"]
+        best_speed = vmc["speed"]
 
         for offset in range(-60, 61, 10):
             heading = (dest_heading + offset) % 360
             twa = angular_difference(wind_dir, heading)
             speed = polar_speed(twa, tws)
             next_lat, next_lon = candidate_point(curr_lat, curr_lon, heading)
+            next_lat += current_v * 0.027
+            next_lon += current_u * 0.027 / max(math.cos(math.radians(curr_lat)), 0.01)
 
             if not is_deep_water(next_lat, next_lon) and (len(points) > 0 and (next_lat, next_lon) != (dest_lat, dest_lon)):
                 continue
 
-            progress = speed * math.cos(math.radians(angular_difference(dest_heading, heading)))
-            if progress > best_score:
-                best_score = progress
+            rad = math.radians(heading)
+            boat_x = math.sin(rad) * speed
+            boat_y = math.cos(rad) * speed
+            dest_rad = math.radians(dest_heading)
+            dest_unit_x = math.sin(dest_rad)
+            dest_unit_y = math.cos(dest_rad)
+            ground_x = boat_x + current_u
+            ground_y = boat_y + current_v
+            score = ground_x * dest_unit_x + ground_y * dest_unit_y
+
+            if score > best_score:
+                best_score = score
                 best_point = (next_lat, next_lon)
                 best_heading = heading
                 best_twa = twa
                 best_speed = speed
 
         if best_point is None:
-            best_point = candidate_point(curr_lat, curr_lon, dest_heading)
-            best_heading = dest_heading
-            best_twa = angular_difference(wind_dir, dest_heading)
-            best_speed = polar_speed(best_twa, tws)
+            for offset in range(0, 360, 30):
+                fallback_heading = (vmc["heading"] + offset) % 360
+                candidate = candidate_point(curr_lat, curr_lon, fallback_heading)
+                if is_deep_water(candidate[0], candidate[1]):
+                    best_point = candidate
+                    best_heading = fallback_heading
+                    best_twa = angular_difference(wind_dir, best_heading)
+                    best_speed = polar_speed(best_twa, tws)
+                    break
+
+        if best_point is None:
+            best_point = candidate_point(curr_lat, curr_lon, vmc["heading"])
+            best_heading = vmc["heading"]
+            best_twa = vmc["twa"]
+            best_speed = vmc["speed"]
 
         curr_lat, curr_lon = best_point
         points.append([curr_lat, curr_lon])
-        last_vmg = best_speed * math.cos(math.radians(angular_difference(dest_heading, best_heading)))
+        last_vmg = best_score
         last_twa = best_twa
         optimal_heading = best_heading
 
@@ -362,9 +416,13 @@ async def calculate_route(data: dict):
     elif current_field.get("zones"):
         current_speed = max(zone.get("intensity", 0.0) for zone in current_field["zones"])
 
+    fastest_zone = current_field.get("fastest_zone") or (current_field.get("zones") and max(current_field["zones"], key=lambda z: z.get("intensity", 0.0)))
+
     return {
         "points": points,
         "metadata": {
+            "fastest_current_area": fastest_zone,
+            "current_compensation": current_compensation,
             "wind_speed": f"{round(wind_speed, 1)} kts",
             "wind_dir": f"{round(wind_dir)}°",
             "current_velocity": f"{round(current_speed, 1)} kts",
