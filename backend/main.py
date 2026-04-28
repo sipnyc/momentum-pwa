@@ -189,7 +189,15 @@ def extract_sea_temp():
 
 @app.post("/isochrone")
 async def calculate_route(data: dict):
-    lat, lon = data.get("lat"), data.get("lon")
+    request_lat = data.get("lat")
+    request_lon = data.get("lon")
+    start_lat = data.get("start_lat", request_lat)
+    start_lon = data.get("start_lon", request_lon)
+    if start_lat is None or start_lon is None:
+        start_lat, start_lon = 38.9784, -76.4922
+
+    end_lat = data.get("end_lat", 32.3078)
+    end_lon = data.get("end_lon", -64.7505)
     forecast_hour = data.get("forecast_hour", 0)
     download_weather()
     wind_field = extract_wind_field()
@@ -318,10 +326,9 @@ async def calculate_route(data: dict):
         except (TypeError, ValueError):
             boat_sog = None
 
-    dest_lat, dest_lon = 32.3078, -64.7505
-    initial_heading = heading_between(lat, lon, dest_lat, dest_lon)
-    current_u, current_v = get_local_current(lat, lon)
-    current_wind = get_local_wind(lat, lon, forecast_hour)
+    initial_heading = heading_between(start_lat, start_lon, end_lat, end_lon)
+    current_u, current_v = get_local_current(start_lat, start_lon)
+    current_wind = get_local_wind(start_lat, start_lon, forecast_hour)
     vmc_solution = find_vmc_heading(initial_heading, current_u, current_v)
     next_maneuver = next_maneuver_forecast(vmc_solution["heading"], current_wind["dir"])
 
@@ -472,10 +479,10 @@ async def calculate_route(data: dict):
         path.append([node["lat"], node["lon"]])
         node = node.get("prev")
     path = list(reversed(path))
-    if path and distance_nm(path[-1][0], path[-1][1], dest_lat, dest_lon) <= 8.0:
-        path[-1] = [dest_lat, dest_lon]
+    if path and distance_nm(path[-1][0], path[-1][1], end_lat, end_lon) <= 8.0:
+        path[-1] = [end_lat, end_lon]
     else:
-        path.append([dest_lat, dest_lon])
+        path.append([end_lat, end_lon])
 
     total_hours = final_node["time"]
     polar_sog = vmc_solution["speed"]
@@ -515,12 +522,16 @@ async def calculate_route(data: dict):
             "twa": f"{round(last_twa)}°",
             "tws": f"{round(tws, 1)} kts",
             "cog": f"{round(optimal_heading)}°",
-            "opt_heading": f"{round(dest_heading)}°",
+            "opt_heading": f"{round(initial_heading)}°",
             "vmc_heading": f"{round(vmc_solution['heading'])}°",
             "vmc_vmg": f"{round(vmc_solution['score'], 1)} kts",
             "polar_sog": f"{round(polar_sog, 1)} kts",
             "performance_bias": f"{round(performance_bias, 1)}%",
             "boat_sog": f"{boat_sog} kts" if boat_sog is not None else "N/A",
+            "time_to_finish_h": round(total_hours, 1),
+            "eta_adjusted_h": round(eta_adjusted, 1),
+            "start_point": {"lat": round(start_lat, 4), "lon": round(start_lon, 4)},
+            "end_point": {"lat": round(end_lat, 4), "lon": round(end_lon, 4)},
             "next_maneuver": next_maneuver,
             "status": "HR53 ISOCHRONE ROUTE",
             "wind_field": wind_field,

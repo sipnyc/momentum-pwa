@@ -278,6 +278,7 @@ const MapEvents = ({ onSetStart }) => {
 const GulfStreamMap = () => {
   const [startPos, setStartPos] = useState([38.9784, -76.4922]);
   const [routeData, setRouteData] = useState(null);
+  const [endPos, setEndPos] = useState([32.3078, -64.7505]);
   const routeBounds = [[33.6, -79.0], [39.8, -63.8]];
   const routeCenter = [36.7, -71.4];
   const [meta, setMeta] = useState({});
@@ -300,13 +301,13 @@ const GulfStreamMap = () => {
 
   const API_BASE = window.location.origin.replace('-5173', '-8000');
 
-  const fetchRoute = async (lat, lon) => {
+  const fetchRoute = async (startLat, startLon, finishLat, finishLon) => {
     setLoading(true);
     try {
       const response = await fetch(`${API_BASE}/isochrone`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ lat, lon, forecast_hour: forecastHour })
+        body: JSON.stringify({ start_lat: startLat, start_lon: startLon, end_lat: finishLat, end_lon: finishLon, forecast_hour: forecastHour })
       });
       const data = await response.json();
       setRouteData(data.points);
@@ -322,8 +323,8 @@ const GulfStreamMap = () => {
   };
 
   useEffect(() => {
-    fetchRoute(startPos[0], startPos[1]);
-  }, [activeModel, forecastHour]);
+    fetchRoute(startPos[0], startPos[1], endPos[0], endPos[1]);
+  }, [activeModel, forecastHour, startPos, endPos]);
 
   const parseWindDirection = (dir) => {
     const raw = String(dir || '').replace(/[^0-9.+-]/g, '');
@@ -478,6 +479,63 @@ const GulfStreamMap = () => {
 
         <div style={{ display: 'grid', gap: '12px' }}>
           <div style={{ padding: '16px 14px', background: '#041204', borderRadius: '14px', border: '1px solid rgba(0,255,0,0.18)' }}>
+            <p style={{ color: '#7f7f7f', margin: 0, fontSize: '0.75rem', letterSpacing: '1px' }}>ROUTE INPUT</p>
+            <div style={{ display: 'grid', gap: '10px', marginTop: '12px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                <label style={{ display: 'grid', gap: '4px', color: '#a8c0a0', fontSize: '0.78rem' }}>
+                  Start Lat
+                  <input
+                    type="number"
+                    step="0.0001"
+                    value={startPos[0]}
+                    onChange={(e) => setStartPos([Number(e.target.value), startPos[1]])}
+                    style={{ width: '100%', padding: '8px 10px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.12)', background: '#011001', color: '#d8f3ff' }}
+                  />
+                </label>
+                <label style={{ display: 'grid', gap: '4px', color: '#a8c0a0', fontSize: '0.78rem' }}>
+                  Start Lon
+                  <input
+                    type="number"
+                    step="0.0001"
+                    value={startPos[1]}
+                    onChange={(e) => setStartPos([startPos[0], Number(e.target.value)])}
+                    style={{ width: '100%', padding: '8px 10px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.12)', background: '#011001', color: '#d8f3ff' }}
+                  />
+                </label>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                <label style={{ display: 'grid', gap: '4px', color: '#a8c0a0', fontSize: '0.78rem' }}>
+                  End Lat
+                  <input
+                    type="number"
+                    step="0.0001"
+                    value={endPos[0]}
+                    onChange={(e) => setEndPos([Number(e.target.value), endPos[1]])}
+                    style={{ width: '100%', padding: '8px 10px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.12)', background: '#011001', color: '#d8f3ff' }}
+                  />
+                </label>
+                <label style={{ display: 'grid', gap: '4px', color: '#a8c0a0', fontSize: '0.78rem' }}>
+                  End Lon
+                  <input
+                    type="number"
+                    step="0.0001"
+                    value={endPos[1]}
+                    onChange={(e) => setEndPos([endPos[0], Number(e.target.value)])}
+                    style={{ width: '100%', padding: '8px 10px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.12)', background: '#011001', color: '#d8f3ff' }}
+                  />
+                </label>
+              </div>
+              <button
+                type="button"
+                onClick={() => fetchRoute(startPos[0], startPos[1], endPos[0], endPos[1])}
+                style={{ marginTop: '8px', padding: '10px 14px', borderRadius: '12px', border: '1px solid #00ff00', background: '#011001', color: '#00ff00', fontFamily: 'monospace', fontWeight: 700, cursor: 'pointer' }}
+              >
+                Recompute Route
+              </button>
+            </div>
+          </div>
+
+          <div style={{ padding: '16px 14px', background: '#041204', borderRadius: '14px', border: '1px solid rgba(0,255,0,0.18)' }}>
             <p style={{ color: '#7f7f7f', margin: 0, fontSize: '0.75rem', letterSpacing: '1px' }}>FORECAST OPTIONS</p>
             <div style={{ display: 'grid', gap: '8px', marginTop: '12px' }}>
               {[
@@ -546,6 +604,8 @@ const GulfStreamMap = () => {
             {meta.current_compensation ? (
               <p style={{ color: '#ff7f50', margin: '10px 0 0', fontSize: '0.82rem', fontWeight: 700 }}>{meta.current_compensation}</p>
             ) : null}
+            <p style={{ color: '#7f7f7f', margin: '10px 0 0', fontSize: '0.82rem' }}>ETA: {meta.eta_adjusted_h ? `${meta.eta_adjusted_h} h` : '--'}</p>
+            <p style={{ color: '#7f7f7f', margin: '6px 0 0', fontSize: '0.82rem' }}>Remaining: {meta.time_to_finish_h ? `${meta.time_to_finish_h} h` : '--'}</p>
             <p style={{ color: '#7f7f7f', margin: '14px 0 0 0', fontSize: '0.75rem', letterSpacing: '1px' }}>Fastest-path bearing</p>
             <p style={{ fontSize: '1.05rem', fontWeight: 700, color: '#7bdfff', margin: '6px 0 0' }}>{meta.vmc_heading ? `${meta.vmc_heading}°` : '--'}</p>
             <p style={{ color: '#7f7f7f', margin: '10px 0 0', fontSize: '0.75rem' }}>Target VMG {meta.vmc_vmg || '--'} </p>
@@ -588,9 +648,9 @@ const GulfStreamMap = () => {
           style={{ height: '100%', width: '100%' }}
         >
           <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-          <MapEvents onSetStart={(pos) => { setStartPos(pos); fetchRoute(pos[0], pos[1]); }} />
+          <MapEvents onSetStart={(pos) => setStartPos(pos)} />
           <Marker position={startPos}><Popup>Current Position</Popup></Marker>
-          <Marker position={[32.3078, -64.7505]}><Popup>Bermuda Finish</Popup></Marker>
+          <Marker position={endPos}><Popup>Finish Point</Popup></Marker>
           {routeData && <Polyline positions={routeData} color="#00ffff" weight={4} />}
           <WindStreamlineOverlay active={showWindStreamlines} forecastHour={forecastHour} windGrid={windGrid} />
           {showWindStreamlines && windBarbs().map((line, idx) => (
