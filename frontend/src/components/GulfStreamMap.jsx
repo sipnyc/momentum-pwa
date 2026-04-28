@@ -26,10 +26,11 @@ const computeWindGrid = (field, bounds = [[33.6, -79.0], [39.8, -63.8]]) => {
 };
 
 const currentSpeedColor = (speed, pulse) => {
-  const alpha = 0.18 + pulse * 0.12;
-  if (speed <= 0.8) return `rgba(70, 130, 255, ${alpha})`;
-  if (speed <= 1.8) return `rgba(72, 209, 204, ${alpha})`;
-  return `rgba(255, 99, 72, ${alpha})`;
+  const alpha = 0.25 + pulse * 0.18;
+  if (speed <= 0.4) return `rgba(20, 60, 255, ${alpha})`;
+  if (speed <= 1.0) return `rgba(40, 160, 255, ${alpha})`;
+  if (speed <= 1.8) return `rgba(255, 180, 0, ${alpha})`;
+  return `rgba(255, 20, 60, ${alpha})`;
 };
 
 const temperatureGradientColor = (temp) => {
@@ -270,6 +271,34 @@ const WeatherHeatmapOverlay = ({ showCurrent, showTemp, currentZones, seaTempDat
   return null;
 };
 
+const IsochroneFans = ({ fans, startPos }) => {
+  if (!fans || fans.length === 0) return null;
+  const strokeColors = ['#00ffc8', '#00aaff', '#aa66ff'];
+  const fillColors = ['rgba(0,255,200,0.07)', 'rgba(0,170,255,0.05)', 'rgba(170,100,255,0.04)'];
+  return fans.map((fan, idx) => {
+    if (!fan || fan.length < 3) return null;
+    const sorted = [...fan].sort((a, b) => {
+      const ba = Math.atan2(a[1] - startPos[1], a[0] - startPos[0]);
+      const bb = Math.atan2(b[1] - startPos[1], b[0] - startPos[0]);
+      return ba - bb;
+    });
+    return (
+      <Polygon
+        key={`fan-${idx}`}
+        positions={sorted}
+        pathOptions={{
+          color: strokeColors[idx] || '#888',
+          fillColor: fillColors[idx] || 'transparent',
+          fillOpacity: 1,
+          weight: 1.5,
+          opacity: 0.7,
+          dashArray: '5 7',
+        }}
+      />
+    );
+  });
+};
+
 const MapEvents = ({ onSetStart }) => {
   useMapEvents({
     click: (e) => onSetStart([e.latlng.lat, e.latlng.lng]),
@@ -296,6 +325,8 @@ const GulfStreamMap = () => {
   const [showWindStreamlines, setShowWindStreamlines] = useState(true);
   const [showCurrentHeatmap, setShowCurrentHeatmap] = useState(false);
   const [showSeaTemp, setShowSeaTemp] = useState(false);
+  const [isochroneFans, setIsochroneFans] = useState([]);
+  const [bias, setBias] = useState(1.0);
 
   const modelSpread = {
     GFS: '±1.4 kt',
@@ -311,10 +342,11 @@ const GulfStreamMap = () => {
       const response = await fetch(`${API_BASE}/isochrone`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ start_lat: startLat, start_lon: startLon, end_lat: finishLat, end_lon: finishLon, forecast_hour: forecastHour })
+        body: JSON.stringify({ start_lat: startLat, start_lon: startLon, end_lat: finishLat, end_lon: finishLon, forecast_hour: forecastHour, bias })
       });
       const data = await response.json();
       setRouteData(data.points);
+      setIsochroneFans(data.isochrone_fans || []);
       setMeta(data.metadata || {});
       setWindField((data.metadata && data.metadata.wind_field) || []);
       setCurrentField((data.metadata && data.metadata.current_field) || { vectors: [] });
@@ -329,7 +361,7 @@ const GulfStreamMap = () => {
 
   useEffect(() => {
     fetchRoute(startPos[0], startPos[1], endPos[0], endPos[1]);
-  }, [activeModel, forecastHour, startPos, endPos]);
+  }, [activeModel, forecastHour, startPos, endPos, bias]);
 
   const parseWindDirection = (dir) => {
     const raw = String(dir || '').replace(/[^0-9.+-]/g, '');
@@ -344,20 +376,17 @@ const GulfStreamMap = () => {
   };
 
   const getSailTrim = () => {
+    if (meta.sail_trim && meta.sail_trim.sails) return meta.sail_trim.sails;
     const twa = parseFloat(String(meta.twa || '').replace(/[^0-9.+-]/g, '')) || 110;
     const tws = parseFloat(String(meta.tws || '').replace(/[^0-9.+-]/g, '')) || 18;
-
-    if (tws >= 8 && twa >= 80 && twa <= 155) {
-      return 'Main + 130% Genoa';
-    }
-    if (tws >= 15 && twa > 155) {
-      return 'Main + 130% Genoa (ease sheet)';
-    }
-    if (tws < 8) {
-      return 'Main + 130% Genoa (light air trim)';
-    }
-    return 'Main + 130% Genoa';
+    if (twa >= 100 && twa < 135 && tws >= 10) return 'Main + A2 Spinnaker (optimal angle)';
+    if (twa >= 135 && tws >= 8) return 'Main + A3 Runner Spinnaker';
+    if (twa >= 80) return 'Main + 150% Genoa (sheet eased)';
+    if (twa >= 45) return 'Main + 130% Genoa (leads aft 1 notch)';
+    return 'Main + 100% Jib (pinned hard)';
   };
+
+  const getSailMode = () => (meta.sail_trim && meta.sail_trim.mode) || 'Reaching';
 
   const getRecommendedBearing = () => {
     const heading = parseHeading(meta.vmc_heading, parseHeading(meta.opt_heading, 0));
@@ -537,6 +566,20 @@ const GulfStreamMap = () => {
               >
                 Recompute Route
               </button>
+              <div style={{ marginTop: '12px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', color: '#a8c0a0', fontSize: '0.78rem', marginBottom: '4px' }}>
+                  <span>Polar Bias (onboard vs theory)</span>
+                  <span style={{ color: bias < 1.0 ? '#ff7f50' : '#00ff00', fontWeight: 700 }}>{Math.round(bias * 100)}%</span>
+                </div>
+                <input
+                  type="range" min="0.70" max="1.05" step="0.01" value={bias}
+                  onChange={(e) => setBias(Number(e.target.value))}
+                  style={{ width: '100%', accentColor: '#00ff00' }}
+                />
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', color: '#555' }}>
+                  <span>70%</span><span>85%</span><span>100%</span>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -603,26 +646,23 @@ const GulfStreamMap = () => {
 
           <div style={{ padding: '18px', background: '#051205', borderRadius: '14px', boxShadow: '0 0 30px rgba(0, 255, 0, 0.18)' }}>
             <p style={{ color: '#7f7f7f', margin: 0, fontSize: '0.85rem', letterSpacing: '1px' }}>GULF STREAM SLINGSHOT</p>
-            <p style={{ fontSize: '2rem', fontWeight: 'bold', color: '#00ff00', fontFamily: 'monospace', letterSpacing: '1px', margin: '10px 0 0' }}>{meta.vmg ? `${meta.vmg}` : '-- kts'}</p>
-            <p style={{ color: '#7f7f7f', margin: '10px 0 0', fontSize: '0.85rem' }}>Current Set / Drift</p>
-            <p style={{ fontSize: '1rem', fontWeight: 700, color: '#00ff00', margin: '6px 0 0' }}>{meta.current_velocity ? `${meta.current_velocity} / ${meta.wind_dir || '--'}` : '-- / --'}</p>
-            {meta.current_compensation ? (
-              <p style={{ color: '#ff7f50', margin: '10px 0 0', fontSize: '0.82rem', fontWeight: 700 }}>{meta.current_compensation}</p>
-            ) : null}
-            <p style={{ color: '#7f7f7f', margin: '10px 0 0', fontSize: '0.82rem' }}>ETA: {meta.eta_adjusted_h ? `${meta.eta_adjusted_h} h` : '--'}</p>
-            <p style={{ color: '#7f7f7f', margin: '6px 0 0', fontSize: '0.82rem' }}>Remaining: {meta.time_to_finish_h ? `${meta.time_to_finish_h} h` : '--'}</p>
-            <p style={{ color: '#7f7f7f', margin: '14px 0 0 0', fontSize: '0.75rem', letterSpacing: '1px' }}>Fastest-path bearing</p>
-            <p style={{ fontSize: '1.05rem', fontWeight: 700, color: '#7bdfff', margin: '6px 0 0' }}>{meta.vmc_heading ? `${meta.vmc_heading}°` : '--'}</p>
-            <p style={{ color: '#7f7f7f', margin: '10px 0 0', fontSize: '0.75rem' }}>Target VMG {meta.vmc_vmg || '--'} </p>
-            {meta.fastest_current_area ? (
-              <p style={{ color: '#ff7373', margin: '10px 0 0', fontSize: '0.75rem' }}>Hot current zone: {meta.fastest_current_area.name || 'Gulf Stream Core'}</p>
-            ) : null}
+            <p style={{ fontSize: '0.72rem', color: '#7f7f7f', margin: '6px 0 0' }}>CURRENT PROFIT</p>
+            <p style={{ fontSize: '2.2rem', fontWeight: 'bold', color: meta.gs_current_kts > 0.5 ? '#00ff00' : '#7f7f7f', fontFamily: 'monospace', letterSpacing: '1px', margin: '2px 0 0', textShadow: meta.gs_current_kts > 0.5 ? '0 0 18px rgba(0,255,0,0.6)' : 'none' }}>
+              {meta.gs_current_kts != null ? `+${meta.gs_current_kts} kt` : '-- kt'}
+            </p>
+            <p style={{ color: '#7f7f7f', margin: '10px 0 0', fontSize: '0.75rem', letterSpacing: '1px' }}>ETA</p>
+            <p style={{ fontSize: '1.1rem', fontWeight: 700, color: '#7bdfff', margin: '2px 0 0' }}>{meta.eta_adjusted_h ? `${meta.eta_adjusted_h} h` : '--'}</p>
+            <p style={{ color: '#7f7f7f', margin: '10px 0 0', fontSize: '0.75rem', letterSpacing: '1px' }}>DISTANCE</p>
+            <p style={{ fontSize: '1.05rem', fontWeight: 700, color: '#a8c0a0', margin: '2px 0 0' }}>{meta.distance_nm ? `${meta.distance_nm} nm` : '--'}</p>
+            <p style={{ color: '#7f7f7f', margin: '10px 0 0', fontSize: '0.75rem', letterSpacing: '1px' }}>POLAR TARGET</p>
+            <p style={{ fontSize: '1.05rem', fontWeight: 700, color: '#00ff00', margin: '2px 0 0' }}>{meta.polar_target_kts ? `${meta.polar_target_kts} kts` : '--'}</p>
           </div>
 
           <div style={{ padding: '18px', background: '#051205', borderRadius: '14px', boxShadow: '0 0 30px rgba(0, 255, 0, 0.18)' }}>
             <p style={{ color: '#7f7f7f', margin: 0, fontSize: '0.85rem', letterSpacing: '1px' }}>SAIL TRIM HUD</p>
-            <p style={{ color: '#fff', margin: '10px 0 2px', fontSize: '0.95rem' }}>TWA {meta.twa || '--'} | TWS {meta.tws || '--'}</p>
-            <p style={{ fontSize: '1.35rem', fontWeight: 'bold', color: '#00ff00', fontFamily: 'monospace', letterSpacing: '1px', margin: '8px 0 0' }}>{getSailTrim()}</p>
+            <p style={{ color: '#7bdfff', margin: '8px 0 2px', fontSize: '0.85rem', fontWeight: 700 }}>{getSailMode()}</p>
+            <p style={{ color: '#a8c0a0', margin: '2px 0 4px', fontSize: '0.8rem' }}>TWA {meta.twa || '--'}° | TWS {meta.tws || '--'} kt</p>
+            <p style={{ fontSize: '1.0rem', fontWeight: 'bold', color: '#00ff00', fontFamily: 'monospace', letterSpacing: '0.5px', margin: '8px 0 0', lineHeight: 1.4 }}>{getSailTrim()}</p>
           </div>
 
           <div style={{ padding: '18px', background: '#051205', borderRadius: '14px', boxShadow: '0 0 30px rgba(0, 255, 0, 0.18)' }}>
@@ -656,6 +696,7 @@ const GulfStreamMap = () => {
           <MapEvents onSetStart={(pos) => setStartPos(pos)} />
           <Marker position={startPos}><Popup>Current Position</Popup></Marker>
           <Marker position={endPos}><Popup>Finish Point</Popup></Marker>
+          <IsochroneFans fans={isochroneFans} startPos={startPos} />
           {routeData && <Polyline positions={routeData} color="#34d399" weight={4} opacity={0.9} />}
           <WindStreamlineOverlay active={showWindStreamlines} forecastHour={forecastHour} windGrid={windGrid} />
           {showWindStreamlines && windBarbs().map((line, idx) => (
@@ -678,7 +719,7 @@ const GulfStreamMap = () => {
             );
           })}
           {showCurrentHeatmap && currentHeatmapLayers()}
-          <WeatherHeatmapOverlay showCurrent={showCurrentHeatmap} showTemp={showSeaTemp} />
+          <WeatherHeatmapOverlay showCurrent={showCurrentHeatmap} showTemp={showSeaTemp} currentZones={currentZones} seaTempData={seaTempData} forecastHour={forecastHour} />
         </MapContainer>
         <div
           style={{
@@ -716,23 +757,30 @@ const GulfStreamMap = () => {
             ))}
           </div>
         </div>
-        <div style={{ position: 'absolute', bottom: '24px', right: '24px', width: '180px', height: '180px', borderRadius: '50%', background: 'rgba(1, 10, 5, 0.9)', border: '1px solid rgba(0,255,0,0.24)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 0 40px rgba(0,255,0,0.2)', padding: '16px' }}>
+        <div style={{ position: 'absolute', bottom: '24px', right: '24px', width: '200px', height: '200px', borderRadius: '50%', background: 'rgba(1, 8, 4, 0.92)', border: '1.5px solid rgba(0,255,0,0.30)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 0 50px rgba(0,255,0,0.22)', zIndex: 999 }}>
           <div style={{ position: 'relative', width: '100%', height: '100%' }}>
-            <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: '1px solid rgba(255,255,255,0.08)' }} />
-            <div style={{ position: 'absolute', inset: '50% 0 0 0', height: '1px', background: 'rgba(255,255,255,0.18)' }} />
-            <div style={{ position: 'absolute', inset: '0 50% 0 0', width: '1px', background: 'rgba(255,255,255,0.18)' }} />
-            <div style={{ position: 'absolute', top: '10px', left: '50%', transform: 'translateX(-50%)', fontSize: '0.7rem', color: '#7f7f7f' }}>N</div>
-            <div style={{ position: 'absolute', bottom: '10px', left: '50%', transform: 'translateX(-50%)', fontSize: '0.7rem', color: '#7f7f7f' }}>S</div>
-            <div style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', fontSize: '0.7rem', color: '#7f7f7f' }}>W</div>
-            <div style={{ position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)', fontSize: '0.7rem', color: '#7f7f7f' }}>E</div>
+            {/* tick ring */}
+            <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: '1px solid rgba(255,255,255,0.06)' }} />
+            <div style={{ position: 'absolute', inset: '10px', borderRadius: '50%', border: '1px dashed rgba(255,255,255,0.04)' }} />
+            {/* cardinal labels */}
+            <div style={{ position: 'absolute', top: '8px', left: '50%', transform: 'translateX(-50%)', fontSize: '0.68rem', color: '#888', fontFamily: 'monospace' }}>N</div>
+            <div style={{ position: 'absolute', bottom: '8px', left: '50%', transform: 'translateX(-50%)', fontSize: '0.68rem', color: '#888', fontFamily: 'monospace' }}>S</div>
+            <div style={{ position: 'absolute', left: '8px', top: '50%', transform: 'translateY(-50%)', fontSize: '0.68rem', color: '#888', fontFamily: 'monospace' }}>W</div>
+            <div style={{ position: 'absolute', right: '8px', top: '50%', transform: 'translateY(-50%)', fontSize: '0.68rem', color: '#888', fontFamily: 'monospace' }}>E</div>
             <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <div style={{ position: 'absolute', width: '4px', height: '80px', background: 'rgba(255, 82, 82, 0.95)', transform: `rotate(${getCompassData().cog}deg) translateY(-22px)`, transformOrigin: 'center bottom', boxShadow: '0 0 20px rgba(255, 82, 82, 0.35)' }} />
-              <div style={{ position: 'absolute', width: '4px', height: '60px', background: 'rgba(84, 144, 255, 0.95)', transform: `rotate(${getCompassData().opt}deg) translateY(-18px)`, transformOrigin: 'center bottom', boxShadow: '0 0 16px rgba(84, 144, 255, 0.28)' }} />
-              <div style={{ position: 'absolute', width: '4px', height: '68px', borderLeft: '3px dashed rgba(255, 216, 98, 0.95)', transform: `rotate(${parseWindDirection(meta.wind_dir || 0)}deg) translateY(-18px)`, transformOrigin: 'center bottom', opacity: 0.95 }} />
-              <div style={{ position: 'absolute', bottom: '16px', left: '50%', transform: 'translateX(-50%)', textAlign: 'center' }}>
-                <div style={{ color: '#00ff00', fontSize: '0.8rem', fontWeight: '700' }}>COG {meta.cog || '--'}</div>
-                <div style={{ color: '#7f7f7f', fontSize: '0.7rem' }}>OPT {meta.opt_heading || '--'}</div>
-                <div style={{ color: '#7bdfff', fontSize: '0.7rem' }}>VMC {meta.vmc_heading || '--'}</div>
+              {/* TWD needle – yellow dashed */}
+              <div style={{ position: 'absolute', width: '3px', height: '72px', borderLeft: '3px dashed rgba(255,216,80,0.90)', transform: `rotate(${parseWindDirection(meta.twd || meta.wind_dir || 0)}deg) translateY(-22px)`, transformOrigin: 'center bottom' }} />
+              {/* OPT needle – blue */}
+              <div style={{ position: 'absolute', width: '3px', height: '68px', background: 'rgba(80,140,255,0.95)', borderRadius: '2px', transform: `rotate(${getCompassData().opt}deg) translateY(-20px)`, transformOrigin: 'center bottom', boxShadow: '0 0 14px rgba(80,140,255,0.4)' }} />
+              {/* COG needle – neon green */}
+              <div style={{ position: 'absolute', width: '4px', height: '82px', background: '#00ff00', borderRadius: '2px', transform: `rotate(${getCompassData().cog}deg) translateY(-24px)`, transformOrigin: 'center bottom', boxShadow: '0 0 18px rgba(0,255,0,0.5)' }} />
+              {/* center hub */}
+              <div style={{ position: 'absolute', width: '10px', height: '10px', borderRadius: '50%', background: '#001800', border: '2px solid rgba(0,255,0,0.5)' }} />
+              {/* data readout */}
+              <div style={{ position: 'absolute', bottom: '18px', left: '50%', transform: 'translateX(-50%)', textAlign: 'center', whiteSpace: 'nowrap' }}>
+                <div style={{ color: '#00ff00', fontSize: '0.85rem', fontWeight: 700, fontFamily: 'monospace', textShadow: '0 0 8px rgba(0,255,0,0.6)' }}>COG {meta.cog != null ? `${Math.round(meta.cog)}°` : '--'}</div>
+                <div style={{ color: '#508cff', fontSize: '0.72rem', fontFamily: 'monospace' }}>OPT {meta.opt_heading != null ? `${Math.round(meta.opt_heading)}°` : '--'}</div>
+                <div style={{ color: '#ffd850', fontSize: '0.72rem', fontFamily: 'monospace' }}>TWD {meta.twd != null ? `${Math.round(meta.twd)}°` : '--'}</div>
               </div>
             </div>
           </div>
