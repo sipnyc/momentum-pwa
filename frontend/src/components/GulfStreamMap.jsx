@@ -26,17 +26,20 @@ const computeWindGrid = (field, bounds = [[33.6, -79.0], [39.8, -63.8]]) => {
 };
 
 const currentSpeedColor = (speed, pulse) => {
-  if (speed <= 1) return 'rgba(40, 112, 255, 0.10)';
-  if (speed <= 2) return 'rgba(34, 197, 94, 0.16)';
-  const alpha = 0.24 + pulse * 0.12;
-  return `rgba(255, 35, 72, ${alpha})`;
+  const alpha = 0.18 + pulse * 0.12;
+  if (speed <= 0.8) return `rgba(70, 130, 255, ${alpha})`;
+  if (speed <= 1.8) return `rgba(72, 209, 204, ${alpha})`;
+  return `rgba(255, 99, 72, ${alpha})`;
 };
 
 const temperatureGradientColor = (temp) => {
-  if (temp <= 20) return 'rgba(128, 0, 128, 0.24)';
-  if (temp >= 25) return 'rgba(255, 85, 0, 0.20)';
-  const mid = (temp - 20) / 5;
-  return `rgba(${Math.round(255 * mid + 128 * (1 - mid))}, ${Math.round(85 * mid)}, ${Math.round(128 * (1 - mid))}, 0.18)`;
+  if (temp <= 19) return 'rgba(40, 112, 255, 0.22)';
+  if (temp >= 26) return 'rgba(255, 40, 40, 0.24)';
+  const ratio = (temp - 19) / 7;
+  const r = Math.round(40 + (255 - 40) * ratio);
+  const g = Math.round(112 - 72 * ratio);
+  const b = Math.round(255 - 215 * ratio);
+  return `rgba(${r}, ${g}, ${b}, 0.20)`;
 };
 
 const WindStreamlineOverlay = ({ active, forecastHour, windGrid }) => {
@@ -283,6 +286,7 @@ const GulfStreamMap = () => {
   const routeCenter = [36.7, -71.4];
   const [meta, setMeta] = useState({});
   const [windField, setWindField] = useState([]);
+  const [currentField, setCurrentField] = useState({ vectors: [] });
   const [currentZones, setCurrentZones] = useState([]);
   const [seaTempData, setSeaTempData] = useState(null);
   const [forecastHours] = useState([0, 3, 6, 9, 12, 15, 18, 21, 24]);
@@ -313,6 +317,7 @@ const GulfStreamMap = () => {
       setRouteData(data.points);
       setMeta(data.metadata || {});
       setWindField((data.metadata && data.metadata.wind_field) || []);
+      setCurrentField((data.metadata && data.metadata.current_field) || { vectors: [] });
       setCurrentZones((data.metadata && data.metadata.current_field && data.metadata.current_field.zones) || []);
       setSeaTempData((data.metadata && data.metadata.sea_temp) || null);
     } catch (err) {
@@ -474,11 +479,11 @@ const GulfStreamMap = () => {
   return (
     <div className="app-container">
       {/* TACTICAL HUD SIDEBAR */}
-      <div className="dashboard-side">
+      <div className="dashboard-side" style={{ width: '380px' }}>
         <h2 style={{ color: '#00ff00', fontSize: '1.4rem', marginTop: 0, marginBottom: '10px', fontFamily: 'monospace', letterSpacing: '2px' }}>MOMENTUM A2B</h2>
 
-        <div style={{ display: 'grid', gap: '12px' }}>
-          <div style={{ padding: '16px 14px', background: '#041204', borderRadius: '14px', border: '1px solid rgba(0,255,0,0.18)' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+          <div style={{ gridColumn: 'span 2', padding: '16px 14px', background: '#041204', borderRadius: '14px', border: '1px solid rgba(0,255,0,0.18)' }}>
             <p style={{ color: '#7f7f7f', margin: 0, fontSize: '0.75rem', letterSpacing: '1px' }}>ROUTE INPUT</p>
             <div style={{ display: 'grid', gap: '10px', marginTop: '12px' }}>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
@@ -535,7 +540,7 @@ const GulfStreamMap = () => {
             </div>
           </div>
 
-          <div style={{ padding: '16px 14px', background: '#041204', borderRadius: '14px', border: '1px solid rgba(0,255,0,0.18)' }}>
+          <div style={{ gridColumn: 'span 2', padding: '16px 14px', background: '#041204', borderRadius: '14px', border: '1px solid rgba(0,255,0,0.18)' }}>
             <p style={{ color: '#7f7f7f', margin: 0, fontSize: '0.75rem', letterSpacing: '1px' }}>FORECAST OPTIONS</p>
             <div style={{ display: 'grid', gap: '8px', marginTop: '12px' }}>
               {[
@@ -638,7 +643,7 @@ const GulfStreamMap = () => {
       </div>
 
       {/* MAP AREA */}
-      <div className="map-side">
+      <div className="map-side" style={{ width: 'calc(100% - 380px)' }}>
         <MapContainer
           center={routeCenter}
           bounds={routeBounds}
@@ -647,11 +652,11 @@ const GulfStreamMap = () => {
           zoom={6}
           style={{ height: '100%', width: '100%' }}
         >
-          <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+          <TileLayer url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png" attribution='&copy; OpenStreetMap contributors &copy; CARTO' />
           <MapEvents onSetStart={(pos) => setStartPos(pos)} />
           <Marker position={startPos}><Popup>Current Position</Popup></Marker>
           <Marker position={endPos}><Popup>Finish Point</Popup></Marker>
-          {routeData && <Polyline positions={routeData} color="#00ffff" weight={4} />}
+          {routeData && <Polyline positions={routeData} color="#34d399" weight={4} opacity={0.9} />}
           <WindStreamlineOverlay active={showWindStreamlines} forecastHour={forecastHour} windGrid={windGrid} />
           {showWindStreamlines && windBarbs().map((line, idx) => (
             <Polyline
@@ -660,6 +665,18 @@ const GulfStreamMap = () => {
               pathOptions={{ color: line.color, weight: line.weight, opacity: 0.95 }}
             />
           ))}
+          {showCurrentHeatmap && currentField.vectors && currentField.vectors.map((vec, idx) => {
+            const endLat = vec.lat + (vec.v * 0.12);
+            const endLon = vec.lon + (vec.u * 0.12) / Math.max(Math.cos(vec.lat * Math.PI / 180), 0.18);
+            const magnitude = Math.hypot(vec.u, vec.v);
+            return (
+              <Polyline
+                key={`current-vector-${idx}`}
+                positions={[[vec.lat, vec.lon], [endLat, endLon]]}
+                pathOptions={{ color: magnitude > 0.6 ? '#ffae42' : '#7dd3fc', weight: 2, opacity: 0.9 }}
+              />
+            );
+          })}
           {showCurrentHeatmap && currentHeatmapLayers()}
           <WeatherHeatmapOverlay showCurrent={showCurrentHeatmap} showTemp={showSeaTemp} />
         </MapContainer>
@@ -709,9 +726,9 @@ const GulfStreamMap = () => {
             <div style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', fontSize: '0.7rem', color: '#7f7f7f' }}>W</div>
             <div style={{ position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)', fontSize: '0.7rem', color: '#7f7f7f' }}>E</div>
             <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <div style={{ position: 'absolute', width: '4px', height: '80px', background: 'rgba(0,255,0,0.75)', transform: `rotate(${getCompassData().cog}deg) translateY(-22px)`, transformOrigin: 'center bottom' }} />
-              <div style={{ position: 'absolute', width: '4px', height: '60px', background: 'rgba(0,255,0,0.4)', transform: `rotate(${getCompassData().opt}deg) translateY(-18px)`, transformOrigin: 'center bottom' }} />
-              <div style={{ position: 'absolute', width: '4px', height: '56px', background: 'rgba(123, 221, 255, 0.92)', transform: `rotate(${getRecommendedBearing()}deg) translateY(-18px)`, transformOrigin: 'center bottom' }} />
+              <div style={{ position: 'absolute', width: '4px', height: '80px', background: 'rgba(255, 82, 82, 0.95)', transform: `rotate(${getCompassData().cog}deg) translateY(-22px)`, transformOrigin: 'center bottom', boxShadow: '0 0 20px rgba(255, 82, 82, 0.35)' }} />
+              <div style={{ position: 'absolute', width: '4px', height: '60px', background: 'rgba(84, 144, 255, 0.95)', transform: `rotate(${getCompassData().opt}deg) translateY(-18px)`, transformOrigin: 'center bottom', boxShadow: '0 0 16px rgba(84, 144, 255, 0.28)' }} />
+              <div style={{ position: 'absolute', width: '4px', height: '68px', borderLeft: '3px dashed rgba(255, 216, 98, 0.95)', transform: `rotate(${parseWindDirection(meta.wind_dir || 0)}deg) translateY(-18px)`, transformOrigin: 'center bottom', opacity: 0.95 }} />
               <div style={{ position: 'absolute', bottom: '16px', left: '50%', transform: 'translateX(-50%)', textAlign: 'center' }}>
                 <div style={{ color: '#00ff00', fontSize: '0.8rem', fontWeight: '700' }}>COG {meta.cog || '--'}</div>
                 <div style={{ color: '#7f7f7f', fontSize: '0.7rem' }}>OPT {meta.opt_heading || '--'}</div>
