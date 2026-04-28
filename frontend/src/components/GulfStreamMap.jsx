@@ -3,6 +3,278 @@ import L from 'leaflet';
 import { MapContainer, TileLayer, Marker, Popup, useMapEvents, useMap, Polyline, Rectangle, Polygon } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 
+const computeWindGrid = (field, bounds = [[33.6, -79.0], [39.8, -63.8]]) => {
+  const rows = 16;
+  const cols = 24;
+  const points = [];
+  const latRange = bounds[1][0] - bounds[0][0];
+  const lonRange = bounds[1][1] - bounds[0][1];
+
+  for (let i = 0; i < rows; i += 1) {
+    const lat = bounds[0][0] + (latRange * i) / (rows - 1);
+    for (let j = 0; j < cols; j += 1) {
+      const lon = bounds[0][1] + (lonRange * j) / (cols - 1);
+      const nearest = field.reduce((best, item) => {
+        const dist = ((item.lat - lat) ** 2) + ((item.lon - lon) ** 2);
+        return dist < best.dist ? { item, dist } : best;
+      }, { item: field[0], dist: Infinity }).item;
+      points.push({ lat, lon, u: nearest.u || 0, v: nearest.v || 0 });
+    }
+  }
+
+  return points;
+};
+
+const currentSpeedColor = (speed, pulse) => {
+  if (speed <= 1) return 'rgba(40, 112, 255, 0.10)';
+  if (speed <= 2) return 'rgba(34, 197, 94, 0.16)';
+  const alpha = 0.24 + pulse * 0.12;
+  return `rgba(255, 35, 72, ${alpha})`;
+};
+
+const temperatureGradientColor = (temp) => {
+  if (temp <= 20) return 'rgba(128, 0, 128, 0.24)';
+  if (temp >= 25) return 'rgba(255, 85, 0, 0.20)';
+  const mid = (temp - 20) / 5;
+  return `rgba(${Math.round(255 * mid + 128 * (1 - mid))}, ${Math.round(85 * mid)}, ${Math.round(128 * (1 - mid))}, 0.18)`;
+};
+
+const WindStreamlineOverlay = ({ active, forecastHour, windGrid }) => {
+  const map = useMap();
+  const canvasRef = useRef(null);
+  const frameRef = useRef(null);
+  const particlesRef = useRef([]);
+
+  useEffect(() => {
+    if (!active || !map || !windGrid || windGrid.length === 0) return undefined;
+    const canvas = document.createElement('canvas');
+    canvas.style.position = 'absolute';
+    canvas.style.top = '0';
+    canvas.style.left = '0';
+    canvas.style.pointerEvents = 'none';
+    canvas.style.zIndex = 450;
+    map.getPanes().overlayPane.appendChild(canvas);
+    canvasRef.current = canvas;
+
+    const particles = windGrid.flatMap((point) => {
+      const speed = Math.sqrt(point.u * point.u + point.v * point.v) || 2;
+      const angle = Math.atan2(-point.v, point.u);
+      const baseSpeed = Math.max(0.6, Math.min(4.6, speed * 0.14));
+      const color = speed > 14 ? 'rgba(255, 80, 40, 0.96)' : speed > 8 ? 'rgba(125, 211, 252, 0.92)' : 'rgba(99, 102, 241, 0.82)';
+      return Array.from({ length: 10 }, () => ({
+        lat: point.lat + (Math.random() - 0.5) * 2.2,
+        lon: point.lon + (Math.random() - 0.5) * 2.2,
+        u: point.u,
+        v: point.v,
+        angle,
+        baseSpeed,
+        color,
+        length: 24 + Math.random() * 16,
+        xOffset: (Math.random() - 0.5) * 42,
+        yOffset: (Math.random() - 0.5) * 42,
+        alpha: 0.2 + Math.random() * 0.5,
+      }));
+    });
+    particlesRef.current = particles;
+
+    const resizeCanvas = () => {
+      const size = map.getSize();
+      canvas.width = size.x;
+      canvas.height = size.y;
+      canvas.style.width = `${size.x}px`;
+      canvas.style.height = `${size.y}px`;
+    };
+
+    const animate = () => {
+      if (!canvasRef.current || !map) return;
+      resizeCanvas();
+      const ctx = canvasRef.current.getContext('2d');
+      if (!ctx) return;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.lineCap = 'round';
+
+      const timeFactor = 0.55 + 0.45 * Math.sin((forecastHour / 24) * Math.PI);
+      particlesRef.current.forEach((particle) => {
+        particle.lat += particle.v * 0.0018 * timeFactor;
+        particle.lon += particle.u * 0.0018 * timeFactor / Math.max(Math.cos(particle.lat * Math.PI / 180), 0.05);
+        const latLng = L.latLng(particle.lat, particle.lon);
+        const start = map.latLngToContainerPoint(latLng);
+        const px = start.x + particle.xOffset;
+        const py = start.y + particle.yOffset;
+        const speed = particle.baseSpeed * timeFactor * (0.9 + Math.min(0.3, Math.sqrt(particle.u * particle.u + particle.v * particle.v) * 0.04));
+        const xEnd = px + Math.cos(particle.angle) * speed * particle.length;
+        const yEnd = py + Math.sin(particle.angle) * speed * particle.length;
+
+        ctx.strokeStyle = particle.color;
+        ctx.lineWidth = 2;
+        ctx.globalAlpha = particle.alpha * 0.65;
+        ctx.shadowBlur = 12;
+        ctx.shadowColor = particle.color;
+        ctx.beginPath();
+        ctx.moveTo(px, py);
+        ctx.lineTo(xEnd, yEnd);
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+      });
+
+      ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = 'source-over';
+      frameRef.current = requestAnimationFrame(animate);
+    };
+
+    map.on('move resize zoom', resizeCanvas);
+    animate();
+
+    return () => {
+      map.off('move resize zoom', resizeCanvas);
+      if (canvas && canvas.parentNode) {
+        canvas.parentNode.removeChild(canvas);
+      }
+      if (frameRef.current) {
+        cancelAnimationFrame(frameRef.current);
+      }
+    };
+  }, [map, active, forecastHour, windGrid]);
+
+  return null;
+};
+
+const WeatherHeatmapOverlay = ({ showCurrent, showTemp, currentZones, seaTempData, forecastHour }) => {
+  const map = useMap();
+  const canvasRef = useRef(null);
+
+  useEffect(() => {
+    if (!map) return undefined;
+    const canvas = document.createElement('canvas');
+    canvas.style.position = 'absolute';
+    canvas.style.top = '0';
+    canvas.style.left = '0';
+    canvas.style.pointerEvents = 'none';
+    canvas.style.zIndex = 420;
+    map.getPanes().overlayPane.appendChild(canvas);
+    canvasRef.current = canvas;
+
+    const resizeCanvas = () => {
+      const size = map.getSize();
+      canvas.width = size.x;
+      canvas.height = size.y;
+      canvas.style.width = `${size.x}px`;
+      canvas.style.height = `${size.y}px`;
+    };
+
+    const drawHeatmap = () => {
+      if (!canvasRef.current || !map) return;
+      resizeCanvas();
+      const ctx = canvasRef.current.getContext('2d');
+      if (!ctx) return;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      if (showTemp && seaTempData) {
+        const avgTemp = ((seaTempData.min_temp || 20) + (seaTempData.max_temp || 25)) / 2;
+        ctx.fillStyle = temperatureGradientColor(avgTemp);
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        if (seaTempData.isotherms) {
+          seaTempData.isotherms.forEach((isotherm) => {
+            if (!isotherm.bounds || isotherm.bounds.length < 3) return;
+            ctx.beginPath();
+            isotherm.bounds.forEach((coord, index) => {
+              const point = map.latLngToContainerPoint(L.latLng(coord[0], coord[1]));
+              if (index === 0) ctx.moveTo(point.x, point.y);
+              else ctx.lineTo(point.x, point.y);
+            });
+            ctx.closePath();
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.22)';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([8, 10]);
+            ctx.stroke();
+            ctx.setLineDash([]);
+          });
+        }
+      }
+
+      if (showCurrent && currentZones && currentZones.length > 0) {
+        currentZones.forEach((zone, idx) => {
+          if (!zone.bounds || zone.bounds.length < 2) return;
+          const intensity = Math.min(1, Math.max(0, zone.intensity || 0.25));
+          const speed = intensity * 5;
+          const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 300);
+          const color = currentSpeedColor(speed, pulse);
+          const coords = zone.bounds.map((coord) => map.latLngToContainerPoint(L.latLng(coord[0], coord[1])));
+          const centroid = coords.reduce((acc, pt) => ({ x: acc.x + pt.x, y: acc.y + pt.y }), { x: 0, y: 0 });
+          centroid.x /= coords.length; centroid.y /= coords.length;
+          const radius = Math.max(...coords.map((pt) => Math.hypot(pt.x - centroid.x, pt.y - centroid.y))) * 1.4;
+          const gradient = ctx.createRadialGradient(centroid.x, centroid.y, radius * 0.15, centroid.x, centroid.y, radius);
+          gradient.addColorStop(0, color);
+          gradient.addColorStop(1, 'rgba(255,255,255,0)');
+          ctx.beginPath();
+          coords.forEach((point, index) => {
+            if (index === 0) ctx.moveTo(point.x, point.y);
+            else ctx.lineTo(point.x, point.y);
+          });
+          ctx.closePath();
+          ctx.fillStyle = gradient;
+          ctx.fill();
+
+          const eddyPoints = Array.from({ length: 12 }, (_, n) => {
+            const angle = (n / 12) * Math.PI * 2 + (idx % 2 ? Math.PI / 8 : 0);
+            return {
+              x: centroid.x + Math.cos(angle) * radius * 0.45,
+              y: centroid.y + Math.sin(angle) * radius * 0.45,
+            };
+          });
+          ctx.beginPath();
+          eddyPoints.forEach((point, index) => {
+            if (index === 0) ctx.moveTo(point.x, point.y);
+            else ctx.lineTo(point.x, point.y);
+          });
+          ctx.closePath();
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
+          ctx.lineWidth = 2;
+          ctx.setLineDash([8, 10]);
+          ctx.stroke();
+          ctx.setLineDash([]);
+
+          const arrowPos = eddyPoints[Math.floor(eddyPoints.length / 2)];
+          const arrowAngle = idx % 2 === 0 ? Math.PI * 0.4 : Math.PI * 1.6;
+          const arrowSize = 12;
+          ctx.beginPath();
+          ctx.moveTo(arrowPos.x, arrowPos.y);
+          ctx.lineTo(arrowPos.x + Math.cos(arrowAngle) * arrowSize, arrowPos.y + Math.sin(arrowAngle) * arrowSize);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(arrowPos.x + Math.cos(arrowAngle) * arrowSize, arrowPos.y + Math.sin(arrowAngle) * arrowSize);
+          ctx.lineTo(arrowPos.x + Math.cos(arrowAngle + 0.5) * (arrowSize * 0.45), arrowPos.y + Math.sin(arrowAngle + 0.5) * (arrowSize * 0.45));
+          ctx.lineTo(arrowPos.x + Math.cos(arrowAngle - 0.5) * (arrowSize * 0.45), arrowPos.y + Math.sin(arrowAngle - 0.5) * (arrowSize * 0.45));
+          ctx.closePath();
+          ctx.fillStyle = 'rgba(255,255,255,0.32)';
+          ctx.fill();
+        });
+      }
+    };
+
+    const update = () => drawHeatmap();
+    map.on('move resize zoom', update);
+    update();
+
+    return () => {
+      map.off('move resize zoom', update);
+      if (canvas && canvas.parentNode) canvas.parentNode.removeChild(canvas);
+    };
+  }, [map, showCurrent, showTemp, currentZones, seaTempData, forecastHour]);
+
+  return null;
+};
+
+const MapEvents = ({ onSetStart }) => {
+  useMapEvents({
+    click: (e) => onSetStart([e.latlng.lat, e.latlng.lng]),
+    contextmenu: (e) => onSetStart([e.latlng.lat, e.latlng.lng])
+  });
+  return null;
+};
+
 const GulfStreamMap = () => {
   const [startPos, setStartPos] = useState([38.9784, -76.4922]);
   const [routeData, setRouteData] = useState(null);
@@ -141,270 +413,7 @@ const GulfStreamMap = () => {
     return [{ lat: startPos[0], lon: startPos[1], u, v }];
   };
 
-  const computeWindGrid = (field) => {
-    const base = field && field.length > 0 ? field : [{ lat: startPos[0], lon: startPos[1], u: 0, v: 0 }];
-    const rows = 16;
-    const cols = 28;
-    const points = [];
-
-    for (let i = 0; i < rows; i += 1) {
-      const lat = -75 + i * 10;
-      for (let j = 0; j < cols; j += 1) {
-        const lon = -180 + j * 13;
-        const nearest = base.reduce((best, item) => {
-          const dist = ((item.lat - lat) ** 2) + ((item.lon - lon) ** 2);
-          return dist < best.dist ? { item, dist } : best;
-        }, { item: base[0], dist: Infinity }).item;
-        points.push({ lat, lon, u: nearest.u || 0, v: nearest.v || 0 });
-      }
-    }
-
-    return points;
-  };
-
-  const currentSpeedColor = (speed, pulse) => {
-    if (speed <= 1) return 'rgba(40, 112, 255, 0.10)';
-    if (speed <= 2) return 'rgba(34, 197, 94, 0.16)';
-    const alpha = 0.24 + pulse * 0.12;
-    return `rgba(255, 35, 72, ${alpha})`;
-  };
-
-  const temperatureGradientColor = (temp) => {
-    if (temp <= 20) return 'rgba(128, 0, 128, 0.24)';
-    if (temp >= 25) return 'rgba(255, 85, 0, 0.20)';
-    const mid = (temp - 20) / 5;
-    return `rgba(${Math.round(255 * mid + 128 * (1 - mid))}, ${Math.round(85 * mid)}, ${Math.round(128 * (1 - mid))}, 0.18)`;
-  };
-
-  const WindStreamlineOverlay = ({ active }) => {
-    const map = useMap();
-    const canvasRef = useRef(null);
-    const frameRef = useRef(null);
-    const particlesRef = useRef([]);
-
-    useEffect(() => {
-      if (!active || !map) return undefined;
-      const canvas = document.createElement('canvas');
-      canvas.style.position = 'absolute';
-      canvas.style.top = '0';
-      canvas.style.left = '0';
-      canvas.style.pointerEvents = 'none';
-      canvas.style.zIndex = 450;
-      map.getPanes().overlayPane.appendChild(canvas);
-      canvasRef.current = canvas;
-
-      const field = normalizeWindField();
-      const grid = computeWindGrid(field);
-      const particles = grid.flatMap((point) => {
-        const speed = Math.sqrt(point.u * point.u + point.v * point.v) || 2;
-        const angle = Math.atan2(-point.v, point.u);
-        const baseSpeed = Math.max(0.6, Math.min(4.6, speed * 0.14));
-        const color = speed > 14 ? 'rgba(255, 80, 40, 0.96)' : speed > 8 ? 'rgba(125, 211, 252, 0.92)' : 'rgba(99, 102, 241, 0.82)';
-        return Array.from({ length: 12 }, () => ({
-          lat: point.lat + (Math.random() - 0.5) * 2.8,
-          lon: point.lon + (Math.random() - 0.5) * 2.8,
-          u: point.u,
-          v: point.v,
-          angle,
-          baseSpeed,
-          color,
-          length: 24 + Math.random() * 16,
-          xOffset: (Math.random() - 0.5) * 42,
-          yOffset: (Math.random() - 0.5) * 42,
-          alpha: 0.2 + Math.random() * 0.5,
-        }));
-      });
-      particlesRef.current = particles;
-
-      const resizeCanvas = () => {
-        const size = map.getSize();
-        canvas.width = size.x;
-        canvas.height = size.y;
-        canvas.style.width = `${size.x}px`;
-        canvas.style.height = `${size.y}px`;
-      };
-
-      const animate = () => {
-        if (!canvasRef.current || !map) return;
-        resizeCanvas();
-        const ctx = canvasRef.current.getContext('2d');
-        if (!ctx) return;
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.globalCompositeOperation = 'lighter';
-        ctx.lineCap = 'round';
-
-        const timeFactor = 0.55 + 0.45 * Math.sin((forecastHour / 24) * Math.PI);
-        particlesRef.current.forEach((particle) => {
-          particle.lat += particle.v * 0.0018 * timeFactor;
-          particle.lon += particle.u * 0.0018 * timeFactor / Math.max(Math.cos(particle.lat * Math.PI / 180), 0.05);
-          const latLng = L.latLng(particle.lat, particle.lon);
-          const start = map.latLngToContainerPoint(latLng);
-          const px = start.x + particle.xOffset;
-          const py = start.y + particle.yOffset;
-          const speed = particle.baseSpeed * timeFactor * (0.9 + Math.min(0.3, Math.sqrt(particle.u * particle.u + particle.v * particle.v) * 0.04));
-          const xEnd = px + Math.cos(particle.angle) * speed * particle.length;
-          const yEnd = py + Math.sin(particle.angle) * speed * particle.length;
-
-          ctx.strokeStyle = particle.color;
-          ctx.lineWidth = 2;
-          ctx.globalAlpha = particle.alpha * 0.65;
-          ctx.shadowBlur = 12;
-          ctx.shadowColor = particle.color;
-          ctx.beginPath();
-          ctx.moveTo(px, py);
-          ctx.lineTo(xEnd, yEnd);
-          ctx.stroke();
-          ctx.shadowBlur = 0;
-        });
-
-        ctx.globalAlpha = 1;
-        ctx.globalCompositeOperation = 'source-over';
-        frameRef.current = requestAnimationFrame(animate);
-      };
-
-      map.on('move resize zoom', resizeCanvas);
-      animate();
-
-      return () => {
-        map.off('move resize zoom', resizeCanvas);
-        if (canvas && canvas.parentNode) {
-          canvas.parentNode.removeChild(canvas);
-        }
-        if (frameRef.current) {
-          cancelAnimationFrame(frameRef.current);
-        }
-      };
-    }, [map, active, forecastHour, windField, meta]);
-
-    return null;
-  };
-
-  const WeatherHeatmapOverlay = ({ showCurrent, showTemp }) => {
-    const map = useMap();
-    const canvasRef = useRef(null);
-
-    useEffect(() => {
-      if (!map) return undefined;
-      const canvas = document.createElement('canvas');
-      canvas.style.position = 'absolute';
-      canvas.style.top = '0';
-      canvas.style.left = '0';
-      canvas.style.pointerEvents = 'none';
-      canvas.style.zIndex = 420;
-      map.getPanes().overlayPane.appendChild(canvas);
-      canvasRef.current = canvas;
-
-      const resizeCanvas = () => {
-        const size = map.getSize();
-        canvas.width = size.x;
-        canvas.height = size.y;
-        canvas.style.width = `${size.x}px`;
-        canvas.style.height = `${size.y}px`;
-      };
-
-      const drawHeatmap = () => {
-        if (!canvasRef.current || !map) return;
-        resizeCanvas();
-        const ctx = canvasRef.current.getContext('2d');
-        if (!ctx) return;
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-        if (showTemp && seaTempData) {
-          const avgTemp = ((seaTempData.min_temp || 20) + (seaTempData.max_temp || 25)) / 2;
-          ctx.fillStyle = temperatureGradientColor(avgTemp);
-          ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-          if (seaTempData.isotherms) {
-            seaTempData.isotherms.forEach((isotherm) => {
-              if (!isotherm.bounds || isotherm.bounds.length < 3) return;
-              ctx.beginPath();
-              isotherm.bounds.forEach((coord, index) => {
-                const point = map.latLngToContainerPoint(L.latLng(coord[0], coord[1]));
-                if (index === 0) ctx.moveTo(point.x, point.y);
-                else ctx.lineTo(point.x, point.y);
-              });
-              ctx.closePath();
-              ctx.strokeStyle = 'rgba(255, 255, 255, 0.22)';
-              ctx.lineWidth = 2;
-              ctx.setLineDash([8, 10]);
-              ctx.stroke();
-              ctx.setLineDash([]);
-            });
-          }
-        }
-
-        if (showCurrent && currentZones && currentZones.length > 0) {
-          currentZones.forEach((zone, idx) => {
-            if (!zone.bounds || zone.bounds.length < 2) return;
-            const intensity = Math.min(1, Math.max(0, zone.intensity || 0.25));
-            const speed = intensity * 5;
-            const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 300);
-            const color = currentSpeedColor(speed, pulse);
-            const coords = zone.bounds.map((coord) => map.latLngToContainerPoint(L.latLng(coord[0], coord[1])));
-            const centroid = coords.reduce((acc, pt) => ({ x: acc.x + pt.x, y: acc.y + pt.y }), { x: 0, y: 0 });
-            centroid.x /= coords.length; centroid.y /= coords.length;
-            const radius = Math.max(...coords.map((pt) => Math.hypot(pt.x - centroid.x, pt.y - centroid.y))) * 1.4;
-            const gradient = ctx.createRadialGradient(centroid.x, centroid.y, radius * 0.15, centroid.x, centroid.y, radius);
-            gradient.addColorStop(0, color);
-            gradient.addColorStop(1, 'rgba(255,255,255,0)');
-            ctx.beginPath();
-            coords.forEach((point, index) => {
-              if (index === 0) ctx.moveTo(point.x, point.y);
-              else ctx.lineTo(point.x, point.y);
-            });
-            ctx.closePath();
-            ctx.fillStyle = gradient;
-            ctx.fill();
-
-            const eddyPoints = Array.from({ length: 12 }, (_, n) => {
-              const angle = (n / 12) * Math.PI * 2 + (idx % 2 ? Math.PI / 8 : 0);
-              return {
-                x: centroid.x + Math.cos(angle) * radius * 0.45,
-                y: centroid.y + Math.sin(angle) * radius * 0.45,
-              };
-            });
-            ctx.beginPath();
-            eddyPoints.forEach((point, index) => {
-              if (index === 0) ctx.moveTo(point.x, point.y);
-              else ctx.lineTo(point.x, point.y);
-            });
-            ctx.closePath();
-            ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
-            ctx.lineWidth = 2;
-            ctx.setLineDash([8, 10]);
-            ctx.stroke();
-            ctx.setLineDash([]);
-
-            const arrowPos = eddyPoints[Math.floor(eddyPoints.length / 2)];
-            const arrowAngle = idx % 2 === 0 ? Math.PI * 0.4 : Math.PI * 1.6;
-            const arrowSize = 12;
-            ctx.beginPath();
-            ctx.moveTo(arrowPos.x, arrowPos.y);
-            ctx.lineTo(arrowPos.x + Math.cos(arrowAngle) * arrowSize, arrowPos.y + Math.sin(arrowAngle) * arrowSize);
-            ctx.stroke();
-            ctx.beginPath();
-            ctx.moveTo(arrowPos.x + Math.cos(arrowAngle) * arrowSize, arrowPos.y + Math.sin(arrowAngle) * arrowSize);
-            ctx.lineTo(arrowPos.x + Math.cos(arrowAngle + 0.5) * (arrowSize * 0.45), arrowPos.y + Math.sin(arrowAngle + 0.5) * (arrowSize * 0.45));
-            ctx.lineTo(arrowPos.x + Math.cos(arrowAngle - 0.5) * (arrowSize * 0.45), arrowPos.y + Math.sin(arrowAngle - 0.5) * (arrowSize * 0.45));
-            ctx.closePath();
-            ctx.fillStyle = 'rgba(255,255,255,0.32)';
-            ctx.fill();
-          });
-        }
-      };
-
-      const update = () => drawHeatmap();
-      map.on('move resize zoom', update);
-      update();
-
-      return () => {
-        map.off('move resize zoom', update);
-        if (canvas && canvas.parentNode) canvas.parentNode.removeChild(canvas);
-      };
-    }, [map, showCurrent, showTemp, currentZones, seaTempData, forecastHour]);
-
-    return null;
-  };
+  const windGrid = computeWindGrid(normalizeWindField());
 
   const windBarbs = () => {
     const field = normalizeWindField();
@@ -459,20 +468,6 @@ const GulfStreamMap = () => {
         <Rectangle key={`current-zone-${idx}`} bounds={zone.bounds} pathOptions={pathOptions} />
       );
     });
-  };
-
-  const MapEvents = () => {
-    useMapEvents({
-      click: (e) => {
-        setStartPos([e.latlng.lat, e.latlng.lng]);
-        fetchRoute(e.latlng.lat, e.latlng.lng);
-      },
-      contextmenu: (e) => {
-        setStartPos([e.latlng.lat, e.latlng.lng]);
-        fetchRoute(e.latlng.lat, e.latlng.lng);
-      }
-    });
-    return null;
   };
 
   return (
@@ -593,11 +588,11 @@ const GulfStreamMap = () => {
           style={{ height: '100%', width: '100%' }}
         >
           <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-          <MapEvents />
+          <MapEvents onSetStart={(pos) => { setStartPos(pos); fetchRoute(pos[0], pos[1]); }} />
           <Marker position={startPos}><Popup>Current Position</Popup></Marker>
           <Marker position={[32.3078, -64.7505]}><Popup>Bermuda Finish</Popup></Marker>
           {routeData && <Polyline positions={routeData} color="#00ffff" weight={4} />}
-          <WindStreamlineOverlay active={showWindStreamlines} />
+          <WindStreamlineOverlay active={showWindStreamlines} forecastHour={forecastHour} windGrid={windGrid} />
           {showWindStreamlines && windBarbs().map((line, idx) => (
             <Polyline
               key={`wind-barb-${idx}`}
