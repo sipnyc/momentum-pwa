@@ -11,6 +11,12 @@ app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 GRIB_FILE = "latest_wind.grib2"
+CURRENT_FILE = "latest_current.grib2"
+HR53_POLAR_TABLE = {
+    30: 0.38, 45: 0.50, 60: 0.62, 75: 0.74,
+    90: 0.84, 105: 0.92, 120: 1.00, 135: 0.96,
+    150: 0.90, 165: 0.82, 180: 0.70,
+}
 
 def download_weather():
     # Simple GFS fetcher - downloads a small slice of the Atlantic
@@ -72,27 +78,37 @@ def extract_wind_field():
 
 def extract_current_field():
     """Extract ocean current data (approximated as Gulf Stream visualization zones)"""
+    current_zones = [
+        {"bounds": [[33.5, -75.5], [34.2, -73.5]], "intensity": 0.85, "name": "Gulf Stream Core"},
+        {"bounds": [[32.7, -72.8], [33.3, -71.2]], "bounds_secondary": [[32.4, -74.5], [33.1, -72.0]], "intensity": 0.65, "name": "Meander Zone"},
+        {"bounds": [[32.0, -71.0], [33.5, -69.5]], "intensity": 0.45, "name": "Recirculation"},
+    ]
+
     try:
-        # Create realistic current heatmap zones with intensity
-        current_zones = [
-            {"bounds": [[33.5, -75.5], [34.2, -73.5]], "intensity": 0.85, "name": "Gulf Stream Core"},
-            {"bounds": [[32.7, -72.8], [33.3, -71.2]], "bounds_secondary": [[32.4, -74.5], [33.1, -72.0]], "intensity": 0.65, "name": "Meander Zone"},
-            {"bounds": [[32.0, -71.0], [33.5, -69.5]], "intensity": 0.45, "name": "Recirculation"},
-        ]
-        
-        # Extract ocean current vectors if available in GRIB
         ds = xr.open_dataset(GRIB_FILE, engine='cfgrib')
         available_vars = list(ds.data_vars)
-        has_current = any('ugrd' in v.lower() or 'ucur' in v.lower() for v in available_vars)
-        
-        if has_current:
-            # Real current field exists
-            u_key = next((v for v in available_vars if 'ugrd' in v.lower() or 'ucur' in v.lower()), None)
-            v_key = next((v for v in available_vars if 'vgrd' in v.lower() or 'vcur' in v.lower()), None)
-            if u_key and v_key:
-                return {"zones": current_zones, "has_vector_data": True}
-        
-        return {"zones": current_zones, "has_vector_data": False}
+        u_key = next((v for v in available_vars if 'ugrd' in v.lower() or 'ucur' in v.lower()), None)
+        v_key = next((v for v in available_vars if 'vgrd' in v.lower() or 'vcur' in v.lower()), None)
+        vectors = []
+
+        if u_key and v_key:
+            u = ds[u_key].values[0] if ds[u_key].ndim > 2 else ds[u_key].values
+            v = ds[v_key].values[0] if ds[v_key].ndim > 2 else ds[v_key].values
+            lats = ds['latitude'].values
+            lons = ds['longitude'].values
+            lat_stride = max(1, len(lats) // 7)
+            lon_stride = max(1, len(lons) // 7)
+            for i in range(0, len(lats), lat_stride):
+                for j in range(0, len(lons), lon_stride):
+                    vectors.append({
+                        "lat": float(lats[i]),
+                        "lon": float(lons[j]),
+                        "u": float(u[i, j]) if i < u.shape[0] and j < u.shape[1] else 0.0,
+                        "v": float(v[i, j]) if i < v.shape[0] and j < v.shape[1] else 0.0,
+                    })
+            return {"zones": current_zones, "has_vector_data": True, "vectors": vectors}
+
+        return {"zones": current_zones, "has_vector_data": False, "vectors": []}
     except Exception as e:
         print(f"Current field extraction failed: {e}")
         return {
@@ -100,7 +116,8 @@ def extract_current_field():
                 {"bounds": [[33.5, -75.5], [34.2, -73.5]], "intensity": 0.85, "name": "Gulf Stream Core"},
                 {"bounds": [[32.7, -72.8], [33.3, -71.2]], "intensity": 0.65, "name": "Meander Zone"},
             ],
-            "has_vector_data": False
+            "has_vector_data": False,
+            "vectors": []
         }
 
 def extract_sea_temp():
@@ -111,19 +128,37 @@ def extract_sea_temp():
         temp_var = next((v for v in available_vars if 'tmp' in v.lower() or 'temp' in v.lower()), None)
         
         if temp_var:
-            temp_data = ds[temp_var].values[0] if len(ds[temp_var].shape) > 2 else ds[temp_var].values
+            temp_data = ds[temp_var].values[0] if ds[temp_var].ndim > 2 else ds[temp_var].values
             lats = ds['latitude'].values
             lons = ds['longitude'].values
-            
-            # Create temperature isotherm lines
             temp_min = float(np.nanmin(temp_data))
             temp_max = float(np.nanmax(temp_data))
-            
+
             isotherms = []
             for threshold in np.linspace(temp_min, temp_max, 5):
                 isotherms.append({"temp": round(threshold, 1), "bounds": [[33.9, -76.2], [33.6, -74.5], [33.3, -72.8], [33.0, -71.2]]})
-            
-            return {"isotherms": isotherms, "min_temp": temp_min, "max_temp": temp_max}
+
+            cold_wall = []
+            gradient_threshold = 0.8
+            if temp_data.ndim >= 2:
+                for i in range(temp_data.shape[0] - 1):
+                    for j in range(temp_data.shape[1] - 1):
+                        dlat = abs(float(temp_data[i + 1, j]) - float(temp_data[i, j]))
+                        dlon = abs(float(temp_data[i, j + 1]) - float(temp_data[i, j]))
+                        if dlat >= gradient_threshold or dlon >= gradient_threshold:
+                            cold_wall.append({
+                                "lat": float(lats[i]),
+                                "lon": float(lons[j]),
+                                "delta": round(max(dlat, dlon), 2)
+                            })
+
+            return {
+                "isotherms": isotherms,
+                "min_temp": temp_min,
+                "max_temp": temp_max,
+                "cold_wall": cold_wall,
+                "cold_wall_threshold": gradient_threshold,
+            }
         else:
             # Fallback isotherms
             return {
@@ -132,7 +167,9 @@ def extract_sea_temp():
                     {"temp": 22.1, "bounds": [[33.8, -76.0], [33.5, -74.3], [33.2, -72.6], [32.9, -71.0]]},
                 ],
                 "min_temp": 20.0,
-                "max_temp": 25.0
+                "max_temp": 25.0,
+                "cold_wall": [],
+                "cold_wall_threshold": 0.8,
             }
     except Exception as e:
         print(f"Sea temp extraction failed: {e}")
@@ -141,7 +178,9 @@ def extract_sea_temp():
                 {"temp": 20.5, "bounds": [[33.9, -76.2], [33.6, -74.5], [33.3, -72.8], [33.0, -71.2]]},
             ],
             "min_temp": 20.0,
-            "max_temp": 25.0
+            "max_temp": 25.0,
+            "cold_wall": [],
+            "cold_wall_threshold": 0.8,
         }
 
 @app.post("/isochrone")
@@ -187,6 +226,48 @@ async def calculate_route(data: dict):
     def polar_speed(twa, tws):
         return max(0.1, tws * polar_factor(twa))
 
+    def predicted_wind_dir(base_dir, hour_offset):
+        return (base_dir + (hour_offset / 24.0) * 40.0) % 360
+
+    def next_maneuver_forecast(current_heading, current_wind):
+        forecast_hours = [3, 6, 9, 12]
+        for hours in forecast_hours:
+            future_wind = predicted_wind_dir(current_wind, hours)
+            shift = angular_difference(current_wind, future_wind)
+            if shift >= 12:
+                predicted_tack = 'starboard' if angular_difference(future_wind, current_heading) < 90 else 'port'
+                suggested_heading = (current_heading + 20) % 360 if predicted_tack == 'starboard' else (current_heading - 20) % 360
+                return {
+                    "time_to_shift_h": hours,
+                    "future_wind_dir": round(future_wind, 1),
+                    "shift_deg": round(shift, 1),
+                    "tack": predicted_tack,
+                    "suggested_heading": round(suggested_heading, 1),
+                }
+        return {
+            "time_to_shift_h": None,
+            "future_wind_dir": None,
+            "shift_deg": 0,
+            "tack": None,
+            "suggested_heading": round(current_heading, 1),
+        }
+
+    def find_vmc_heading(destination_heading):
+        best = {"heading": destination_heading, "score": -999.0, "speed": 0.0, "twa": 0.0}
+        for offset in range(-70, 71, 5):
+            heading = (destination_heading + offset) % 360
+            twa = angular_difference(wind_dir, heading)
+            speed = polar_speed(twa, tws)
+            score = speed * math.cos(math.radians(angular_difference(destination_heading, heading)))
+            if score > best["score"]:
+                best = {"heading": heading, "score": score, "speed": speed, "twa": twa}
+        return best
+
+    def compute_performance_bias(actual_sog, predicted_polar):
+        if actual_sog is not None and actual_sog > 0:
+            return round((actual_sog / max(predicted_polar, 0.1)) * 100.0, 1)
+        return None
+
     def is_deep_water(lat_pt, lon_pt):
         if lat_pt is None or lon_pt is None:
             return False
@@ -210,9 +291,21 @@ async def calculate_route(data: dict):
     tws = wind_speed if wind_speed > 0.1 else 18.5
     tws = tws * (1.0 + 0.04 * math.sin(math.radians(forecast_hour * 9)))
 
+    boat_sog = None
+    raw_boat_sog = data.get("boat_sog")
+    if raw_boat_sog is not None:
+        try:
+            boat_sog = float(raw_boat_sog)
+        except (TypeError, ValueError):
+            boat_sog = None
+
+    dest_lat, dest_lon = 32.3078, -64.7505
+    initial_heading = heading_between(lat, lon, dest_lat, dest_lon)
+    vmc_solution = find_vmc_heading(initial_heading)
+    next_maneuver = next_maneuver_forecast(vmc_solution["heading"], wind_dir)
+
     points = [[lat, lon]]
     curr_lat, curr_lon = lat, lon
-    dest_lat, dest_lon = 32.3078, -64.7505
 
     optimal_heading = heading_between(curr_lat, curr_lon, dest_lat, dest_lon)
     last_vmg = 0.0
@@ -258,17 +351,34 @@ async def calculate_route(data: dict):
     if points:
         points[-1] = [dest_lat, dest_lon]
 
+    polar_sog = vmc_solution["speed"]
+    performance_bias = compute_performance_bias(boat_sog, polar_sog)
+    if performance_bias is None:
+        performance_bias = round((last_vmg / max(polar_sog, 0.1)) * 100.0, 1)
+
+    current_speed = 0.0
+    if current_field.get("has_vector_data") and current_field.get("vectors"):
+        current_speed = max(math.hypot(v["u"], v["v"]) for v in current_field["vectors"])
+    elif current_field.get("zones"):
+        current_speed = max(zone.get("intensity", 0.0) for zone in current_field["zones"])
+
     return {
         "points": points,
         "metadata": {
             "wind_speed": f"{round(wind_speed, 1)} kts",
             "wind_dir": f"{round(wind_dir)}°",
-            "current_velocity": "2.1 kts",
+            "current_velocity": f"{round(current_speed, 1)} kts",
             "vmg": f"{round(last_vmg, 1)} kts",
             "twa": f"{round(last_twa)}°",
             "tws": f"{round(tws, 1)} kts",
             "cog": f"{round(optimal_heading)}°",
             "opt_heading": f"{round(dest_heading)}°",
+            "vmc_heading": f"{round(vmc_solution['heading'])}°",
+            "vmc_vmg": f"{round(vmc_solution['score'], 1)} kts",
+            "polar_sog": f"{round(polar_sog, 1)} kts",
+            "performance_bias": f"{round(performance_bias, 1)}%",
+            "boat_sog": f"{boat_sog} kts" if boat_sog is not None else "N/A",
+            "next_maneuver": next_maneuver,
             "status": "HR53 POLAR ROUTE",
             "wind_field": wind_field,
             "current_field": current_field,
