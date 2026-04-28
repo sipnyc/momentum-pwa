@@ -18,7 +18,7 @@ Polar-driven tactical routing PWA for offshore racing. Built for the HR53 (Secon
 ```bash
 cd backend
 pip install -r requirements.txt
-python main.py
+
 ```
 
 Runs on `http://localhost:8000`. The `/isochrone` endpoint accepts a POST with `start_lat`, `start_lon`, optional `end_lat`/`end_lon` (defaults to Bermuda), and a `bias` factor (default `1.0`).
