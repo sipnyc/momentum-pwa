@@ -105,11 +105,21 @@ def in_ocean(lat, lon) -> bool:
 
 # ── Synthetic wind model ───────────────────────────────────────────
 
-def wind_at(lat, lon) -> tuple:
-    """Realistic synthetic Atlantic SW wind with Gulf Stream thermal gradient."""
-    base_dir = 225.0 + 18.0 * math.sin(math.radians(lat * 4 + lon * 2))
-    base_spd = 13.0 + 4.0 * math.sin(math.radians(lat * 5)) + 2.5 * math.cos(math.radians(lon * 3))
-    return base_dir, max(4.0, base_spd)
+def wind_at(lat, lon, forecast_hour: float = 0) -> tuple:
+    """Time-varying synthetic Atlantic wind: SW base, system builds over 120 h.
+
+    At t=0:  ~10-13 kt, 220-230°.
+    At t=72: front approaches, veers W, builds to 16-20 kt.
+    At t=120: post-front NW, 18-22 kt (classic A2B weather window).
+    """
+    t = forecast_hour / 120.0  # 0→1 over the full race window
+    # Direction veers from SW (225°) toward W/NW (285°) as front passes ~t=0.55
+    veer = 60.0 * math.exp(-((t - 0.55) ** 2) / 0.06)  # bell-shaped veer at t=55%
+    base_dir = 225.0 + veer + 18.0 * math.sin(math.radians(lat * 4 + lon * 2))
+    # Speed: builds to peak ~t=0.6 then settles
+    build = 1.0 + 0.7 * math.exp(-((t - 0.60) ** 2) / 0.08)
+    base_spd = (13.0 + 4.0 * math.sin(math.radians(lat * 5)) + 2.5 * math.cos(math.radians(lon * 3))) * build
+    return base_dir % 360, max(4.0, base_spd)
 
 
 # ── Gulf Stream current model ──────────────────────────────────────
@@ -288,7 +298,7 @@ def sail_trim(twa: float, tws: float) -> dict:
 
 # ── Wind/current field for heatmap ────────────────────────────────
 
-def build_wind_field(bounds=((33.0, -79.0), (40.0, -64.0)), rows=10, cols=15):
+def build_wind_field(forecast_hour: float = 0, bounds=((33.0, -79.0), (40.0, -64.0)), rows=10, cols=15):
     points = []
     lat0, lon0 = bounds[0]
     lat1, lon1 = bounds[1]
@@ -296,7 +306,7 @@ def build_wind_field(bounds=((33.0, -79.0), (40.0, -64.0)), rows=10, cols=15):
         la = lat0 + (lat1 - lat0) * r / (rows - 1)
         for c in range(cols):
             lo = lon0 + (lon1 - lon0) * c / (cols - 1)
-            twd, tws = wind_at(la, lo)
+            twd, tws = wind_at(la, lo, forecast_hour)
             rad = math.radians((twd + 180) % 360)
             u = tws * math.sin(rad)
             v = tws * math.cos(rad)
@@ -348,7 +358,7 @@ async def isochrone_route(req: RouteRequest):
 
     dist = haversine_nm(req.start_lat, req.start_lon, req.end_lat, req.end_lon)
     brg = bearing(req.start_lat, req.start_lon, req.end_lat, req.end_lon)
-    twd, tws = wind_at(req.start_lat, req.start_lon)
+    twd, tws = wind_at(req.start_lat, req.start_lon, req.forecast_hour)
     twa = (brg - twd + 360) % 360
     if twa > 180:
         twa = 360 - twa
@@ -362,7 +372,7 @@ async def isochrone_route(req: RouteRequest):
     eta_display = round(eta_h, 1) if eta_h < float("inf") else round(dist / 8.0, 1)
     bias_pct = round(req.bias * 100)
 
-    wind_field = build_wind_field()
+    wind_field = build_wind_field(req.forecast_hour)
     current_zones = build_current_zones()
 
     return {
