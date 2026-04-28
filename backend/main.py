@@ -99,12 +99,15 @@ def in_ocean(lat, lon) -> bool:
     return not globe.is_land(lat, lon)
 
 
-def segment_in_water(lat1, lon1, lat2, lon2, samples=8, allow_endpoint_land=False) -> bool:
-    if not in_ocean(lat1, lon1):
+def segment_in_water(lat1, lon1, lat2, lon2, samples=8, allow_endpoint_land=False, allow_start_land=False) -> bool:
+    if not allow_start_land and not in_ocean(lat1, lon1):
         return False
     if not allow_endpoint_land and not in_ocean(lat2, lon2):
         return False
-    for i in range(1, samples + 1):
+    start_index = 1
+    if allow_start_land:
+        start_index = max(2, int(samples * 0.2))
+    for i in range(start_index, samples + 1):
         t = i / (samples + 1)
         la = lat1 + (lat2 - lat1) * t
         lo = lon1 + (lon2 - lon1) * t
@@ -113,9 +116,9 @@ def segment_in_water(lat1, lon1, lat2, lon2, samples=8, allow_endpoint_land=Fals
     return True
 
 
-def propagate_segment(lat, lon, hdg_deg, speed_kts, cu, cv, dt_h):
+def propagate_segment(lat, lon, hdg_deg, speed_kts, cu, cv, dt_h, allow_start_land=False):
     nla, nlo = propagate(lat, lon, hdg_deg, speed_kts, cu, cv, dt_h)
-    if not segment_in_water(lat, lon, nla, nlo):
+    if not segment_in_water(lat, lon, nla, nlo, allow_start_land=allow_start_land):
         return None
     return nla, nlo
 
@@ -251,6 +254,8 @@ def _heuristic_time(lat, lon, end_lat, end_lon):
 
 
 def _direct_goal_time(lat, lon, end_lat, end_lon, bias):
+    if not in_ocean(lat, lon):
+        return float("inf")
     if not segment_in_water(lat, lon, end_lat, end_lon, allow_endpoint_land=True):
         return float("inf")
     dist = haversine_nm(lat, lon, end_lat, end_lon)
@@ -306,7 +311,8 @@ def build_path(start_lat, start_lon, end_lat, end_lon, bias) -> list:
             bs = polar_speed(twa, tws, bias)
             if bs < 0.5:
                 continue
-            endpoint = propagate_segment(la, lo, hdg, bs, cu, cv, _SEARCH_DT)
+            allow_start_land = step == 0 and not in_ocean(la, lo)
+            endpoint = propagate_segment(la, lo, hdg, bs, cu, cv, _SEARCH_DT, allow_start_land=allow_start_land)
             if endpoint is None:
                 continue
             nla, nlo = endpoint
