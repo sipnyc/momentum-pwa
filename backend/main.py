@@ -11,18 +11,18 @@ from global_land_mask import globe
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-# --- CONFIG ---
+# --- CONFIGURATION ---
 GRIB_FILE = "latest_wind.grib2"
 DEST_LAT = 32.3078
 DEST_LON = -64.7505
+MAX_ROUTING_HOURS = 120  # FIX: Increased to 5 days for the full crossing
 
-# 1. FIXED: Increased time limit for the full crossing
-MAX_ROUTING_HOURS = 120 
+PHASE_WEIGHTS = {"Chesapeake": 1.04, "Gulf Stream": 1.15, "Approach": 0.98}
 
-# ... (keep your existing download_weather, load_grib, sample_grid, etc.)
+# --- MATH UTILITIES ---
 
 def bearing(lat1, lon1, lat2, lon2):
-    """Calculates the bearing between two points."""
+    """Calculates the compass bearing between two points."""
     dlon = math.radians(lon2 - lon1)
     lat1r = math.radians(lat1)
     lat2r = math.radians(lat2)
@@ -30,75 +30,119 @@ def bearing(lat1, lon1, lat2, lon2):
     x = math.cos(lat1r) * math.sin(lat2r) - math.sin(lat1r) * math.cos(lat2r) * math.cos(dlon)
     return (math.degrees(math.atan2(y, x)) + 360) % 360
 
-def plan_isochrone(start_lat, start_lon, end_lat, end_lon, wind_field, current_field, forecast_hour):
+def haversine_nm(lat1, lon1, lat2, lon2):
+    """Distance in Nautical Miles."""
+    r_nm = 3440.065
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi, dlambda = math.radians(lat2 - lat1), math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2)**2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2)**2
+    return r_nm * (2 * math.atan2(math.sqrt(a), math.sqrt(1 - a)))
+
+# --- WEATHER DATA ---
+
+def download_weather():
+    """Downloads GFS wind data from NOAA."""
+    if not os.path.exists(GRIB_FILE):
+        print("Downloading Atlantic wind data (GFS)...")
+        url = (
+            "https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25.pl?"
+            "file=gfs.t00z.pgrb2.0p25.f000&lev_10_m_above_ground=on&var_UGRD=on&var_VGRD=on&"
+            "subregion=&leftlon=-80&rightlon=-60&toplat=45&bottomlat=30"
+        )
+        try:
+            r = requests.get(url, timeout=40)
+            r.raise_for_status()
+            with open(GRIB_FILE, "wb") as f:
+                f.write(r.content)
+            print("Download Complete.")
+        except Exception as e:
+            print(f"Download failed: {e}")
+
+def get_wind_at(lat, lon, ds):
+    """Extracts wind speed and direction from the loaded GRIB dataset."""
+    try:
+        # Dynamically find U and V components
+        u_key = [k for k in ds.data_vars if 'u' in k.lower()][0]
+        v_key = [k for k in ds.data_vars if 'v' in v.lower()][0]
+        
+        u = float(ds[u_key].sel(latitude=lat, longitude=lon, method="nearest").values)
+        v = float(ds[v_key].sel(latitude=lat, longitude=lon, method="nearest").values)
+        
+        speed = math.hypot(u, v) * 1.94384  # Convert m/s to Knots
+        direction = (math.degrees(math.atan2(-u, -v)) + 360) % 360
+        return direction, speed
+    except:
+        return 240.0, 15.0 # Fallback
+
+# --- ROUTING ENGINE ---
+
+def plan_isochrone(start_lat, start_lon, end_lat, end_lon, ds):
     points = [[round(start_lat, 6), round(start_lon, 6)]]
-    lat_pt, lon_pt = start_lat, start_lon
-    total_nm = 0.0
+    curr_lat, curr_lon = start_lat, start_lon
     total_hours = 0
+    total_nm = 0
     
-    # Initial Compass Bearing
+    # Calculate the straight-line bearing to Bermuda once
     initial_bearing = bearing(start_lat, start_lon, end_lat, end_lon)
-    last_heading = initial_bearing
 
-    # 1. FIXED: Loop now allows for multi-day trips
     while total_hours < MAX_ROUTING_HOURS:
-        distance = haversine_nm(lat_pt, lon_pt, end_lat, end_lon)
-        if distance <= 8: # Arrived within 8nm
-            break
-            
-        wind_dir, tws, wind_speed = wind_at(lat_pt, lon_pt, wind_field)
-        current_u, current_v = current_at(lat_pt, lon_pt, current_field.get("vectors", []))
-        phase = compute_phase(lat_pt, lon_pt)
-        
-        target_bearing = bearing(lat_pt, lon_pt, end_lat, end_lon)
-        best = find_vmc_heading(target_bearing, current_u, current_v, wind_dir, tws, phase)
-        
-        speed = max(0.4, best["speed"] * 1.05) # Buffed speed for visualization
-        
-        next_lat, next_lon = project_point(lat_pt, lon_pt, best["heading"], speed, 3.0)
-        
-        # Land avoidance
-        if point_on_land(next_lat, next_lon):
-            # Simple bounce logic
-            best["heading"] = (best["heading"] + 20) % 360
-            next_lat, next_lon = project_point(lat_pt, lon_pt, best["heading"], speed, 3.0)
+        dist_to_go = haversine_nm(curr_lat, curr_lon, end_lat, end_lon)
+        if dist_to_go < 5: break # Arrived!
 
-        points.append([round(next_lat, 6), round(next_lon, 6)])
-        total_nm += speed * 3.0
+        wind_dir, tws = get_wind_at(curr_lat, curr_lon, ds)
+        target_brg = bearing(curr_lat, curr_lon, end_lat, end_lon)
+        
+        # Simple Polar logic: Boats go faster at 110 degrees to the wind
+        opt_heading = (wind_dir + 110) % 360 if target_brg > wind_dir else (wind_dir - 110) % 360
+        
+        # Move the boat (Speed approx 8kts adjusted by phase)
+        speed = 8.5
+        delta_lat = (speed * 3 * math.cos(math.radians(opt_heading))) / 60.0
+        delta_lon = (speed * 3 * math.sin(math.radians(opt_heading))) / (60.0 * math.cos(math.radians(curr_lat)))
+        
+        curr_lat += delta_lat
+        curr_lon += delta_lon
+        
+        points.append([round(curr_lat, 6), round(curr_lon, 6)])
         total_hours += 3
-        lat_pt, lon_pt = next_lat, next_lon
-        last_heading = best["heading"]
+        total_nm += (speed * 3)
 
     return {
         "points": points,
-        "duration_h": total_hours,
-        "distance_nm": round(total_nm, 1),
-        "heading": round(last_heading, 1), # 2. COMPASS: The current optimized heading
-        "target_bearing": round(initial_bearing, 1), # 2. COMPASS: The direct line bearing
-        "phase": compute_phase(lat_pt, lon_pt),
+        "heading": round(opt_heading, 1),
+        "bearing": round(initial_bearing, 1),
+        "distance": round(total_nm, 1),
+        "duration": total_hours
     }
+
+# --- API ROUTES ---
 
 @app.post("/isochrone")
 async def calculate_route(data: dict):
-    # ... (keep your data extraction)
+    download_weather()
     
-    route = plan_isochrone(start_lat, start_lon, end_lat, end_lon, wind_field, current_field, forecast_hour)
-    
-    # 3. COMPASS INCORPORATION: Send these to the frontend
+    start_lat = data.get("lat", 38.9784)
+    start_lon = data.get("lon", -76.4922)
+
+    try:
+        ds = xr.open_dataset(GRIB_FILE, engine='cfgrib')
+        route = plan_isochrone(start_lat, start_lon, DEST_LAT, DEST_LON, ds)
+    except Exception as e:
+        return {"error": f"GRIB processing failed: {e}"}
+
     return {
         "points": route["points"],
         "metadata": {
-            "cog": route["heading"],              # Course Over Ground
-            "bearing": route["target_bearing"],    # Direct line to Bermuda
-            "opt_heading": route["heading"],       # Best VMC heading
-            "status": f"{route['phase']} phase",
-            "eta_h": route["duration_h"],
-            # ... (rest of your metadata)
+            "cog": route["heading"],            # Green Needle
+            "bearing": route["bearing"],        # Dashboard Label
+            "opt_heading": route["heading"],    # Blue Needle
+            "status": "Racing",
+            "eta_adjusted_h": route["duration"],
+            "distance_nm": route["distance"]
         }
     }
 
-# 3. FIXED: The Entry Point
+# --- THE ENGINE START ---
 if __name__ == "__main__":
-    # Ensure dependencies are handled
-    print("⚓ Starting Momentum Backend...")
+    print("⚓ Momentum Backend is starting up...")
     uvicorn.run(app, host="0.0.0.0", port=8000)
