@@ -6,3 +6,4 @@ xarray
 scipy
 cfgrib
 requests
+global-land-mask

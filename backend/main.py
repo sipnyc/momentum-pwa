@@ -6,6 +6,7 @@ import numpy as np
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from global_land_mask import globe
 from pydantic import BaseModel
 from scipy.interpolate import RegularGridInterpolator
 
@@ -91,16 +92,77 @@ def propagate(lat, lon, hdg_deg, speed_kts, cu=0.0, cv=0.0, dt_h=1 / 3) -> tuple
     return lat + dlat, lon + dlon
 
 
-# ── Atlantic routing corridor ──────────────────────────────────────
+# ── Real land mask with 0.05° cache ───────────────────────────────
+
+_OCEAN_CACHE: dict = {}
+
+
+def is_ocean(lat: float, lon: float) -> bool:
+    """globe.is_ocean with coarse caching so routing loops stay fast."""
+    key = (round(lat * 20) / 20, round(lon * 20) / 20)
+    if key not in _OCEAN_CACHE:
+        _OCEAN_CACHE[key] = bool(globe.is_ocean(lat, lon))
+    return _OCEAN_CACHE[key]
+
 
 def in_ocean(lat, lon) -> bool:
-    if not (27.0 <= lat <= 43.0 and -79.0 <= lon <= -60.0):
+    """Routing-safe ocean check: bounds + real land mask."""
+    if not (25.0 <= lat <= 43.5 and -82.0 <= lon <= -60.0):
         return False
-    if lat < 30.5 and lon > -81.0:   # Florida
-        return False
-    if 34.5 <= lat <= 35.3 and lon > -75.8:   # Cape Hatteras shoals
-        return False
-    return True
+    return is_ocean(lat, lon)
+
+
+def snap_to_ocean(lat: float, lon: float) -> tuple:
+    """Return the nearest ocean point when a marina/island is given as start/end."""
+    if is_ocean(lat, lon):
+        return lat, lon
+    for step in range(1, 30):
+        r = step * 0.04
+        for angle_deg in range(0, 360, 15):
+            rad = math.radians(angle_deg)
+            nlat = lat + r * math.cos(rad)
+            nlon = lon + r * math.sin(rad) / max(math.cos(math.radians(lat)), 0.1)
+            if is_ocean(nlat, nlon):
+                return round(nlat, 4), round(nlon, 4)
+    return lat, lon
+
+
+# ── Chesapeake Bay channel ─────────────────────────────────────────
+# Verified ocean waypoints (globe.is_ocean == True) that follow the
+# main ship channel from the Bay head to Cape Henry.
+_CHESAPEAKE_CORRIDOR = [
+    (38.85, -76.40),
+    (38.50, -76.35),
+    (38.20, -76.25),
+    (37.85, -76.15),
+    (37.55, -76.08),
+    (37.20, -76.02),
+    (37.00, -75.97),
+    (36.88, -75.80),
+    (36.70, -75.55),
+]
+
+
+def _in_bay_region(lat: float, lon: float) -> bool:
+    return 36.6 < lat < 39.6 and -77.6 < lon < -75.4
+
+
+def bay_corridor_path(start_lat: float, start_lon: float) -> list:
+    """
+    Walk the Chesapeake corridor waypoints from the start southward until
+    clear of the Bay region.  Returns [[lat,lon], ...] ending at the first
+    open-Atlantic waypoint south of the starting latitude.
+    """
+    snapped = snap_to_ocean(start_lat, start_lon)
+    pts = [[start_lat, start_lon]]
+    if snapped != (start_lat, start_lon):
+        pts.append(list(snapped))
+    for wp in _CHESAPEAKE_CORRIDOR:
+        if wp[0] < start_lat + 0.1:        # only add southward waypoints
+            pts.append(list(wp))
+        if not _in_bay_region(wp[0], wp[1]):
+            break
+    return pts
 
 
 # ── Synthetic wind model ───────────────────────────────────────────
@@ -170,9 +232,14 @@ def _prune_frontier(lats, lons):
 
 
 def expand_fans(start_lat, start_lon, end_lat, end_lon, bias) -> list:
-    """3-step fan expansion capturing reachability rings at 3 h, 6 h, 12 h."""
-    f_lat = [start_lat]
-    f_lon = [start_lon]
+    """3-step fan expansion capturing reachability rings at 3 h, 6 h, 12 h.
+    If starting in the Bay, fans originate from the Bay mouth."""
+    fan_origin_lat, fan_origin_lon = start_lat, start_lon
+    if _in_bay_region(start_lat, start_lon):
+        # Expand fans from the Atlantic entry point, not inside the Bay
+        fan_origin_lat, fan_origin_lon = 36.70, -75.55
+    f_lat = [fan_origin_lat]
+    f_lon = [fan_origin_lon]
     fans = []
     max_step = max(_FAN_STEPS)
 
@@ -222,28 +289,40 @@ def eta_from_path(path: list, bias: float) -> float:
     return round(total_h, 1)
 
 
-# ── Greedy VMC path builder ────────────────────────────────────────
+# ── Isochrone path builder ─────────────────────────────────────────
 
 _PATH_DT = 1 / 3       # 20-minute steps
-_PATH_HDG = 36         # headings tested per step
-_PATH_MAX_PTS = 45
+_PATH_HDG = 72         # headings tested (every 5° — tight enough to find GS deviations)
+_PATH_MAX_PTS = 50
+_SLINGSHOT_W = 0.55    # weight for current-toward-dest bonus (drives GS hunting)
 
 
-def build_path(start_lat, start_lon, end_lat, end_lon, bias) -> list:
-    """Greedy maximum-VMC path for route display."""
-    path = [[start_lat, start_lon]]
+def _ocean_path(start_lat, start_lon, end_lat, end_lon, bias) -> list:
+    """
+    Dijkstra-style greedy path over open ocean.
+
+    Score = VMC (polar+current toward dest) + slingshot bonus (reward being
+    in favorable current even if VMC is identical), so the route will deviate
+    up to ~20° off the rhumb line to thread the Gulf Stream core.
+    """
+    # Bermuda is an island — aim just east so land-mask doesn't block arrival
+    vdest_lat = end_lat + 0.05
+    vdest_lon = end_lon + 0.25
+
+    path: list = [[start_lat, start_lon]]
     la, lo = start_lat, start_lon
     max_steps = int(120 / _PATH_DT)
     emit_every = max(1, max_steps // _PATH_MAX_PTS)
 
     for step in range(max_steps):
         dist = haversine_nm(la, lo, end_lat, end_lon)
-        if dist < 8.0:
+        if dist < 12.0:
             path.append([end_lat, end_lon])
             break
         twd, tws = wind_at(la, lo)
         cu, cv = current_at(la, lo)
-        best_vmc, best_la, best_lo = -1e9, la, lo
+        best_score, best_la, best_lo = -1e9, la, lo
+
         for i in range(_PATH_HDG):
             hdg = i * (360.0 / _PATH_HDG)
             twa = (hdg - twd + 360) % 360
@@ -255,10 +334,20 @@ def build_path(start_lat, start_lon, end_lat, end_lon, bias) -> list:
             nla, nlo = propagate(la, lo, hdg, bs, cu, cv, _PATH_DT)
             if not in_ocean(nla, nlo):
                 continue
-            ndist = haversine_nm(nla, nlo, end_lat, end_lon)
-            vmc = (dist - ndist) / _PATH_DT
-            if vmc > best_vmc:
-                best_vmc, best_la, best_lo = vmc, nla, nlo
+
+            # Base VMC: how much closer to destination per hour
+            ndist = haversine_nm(nla, nlo, vdest_lat, vdest_lon)
+            base_vmc = (haversine_nm(la, lo, vdest_lat, vdest_lon) - ndist) / _PATH_DT
+
+            # Slingshot bonus: current component toward dest at the *new* position
+            ncu, ncv = current_at(nla, nlo)
+            brg_rad = math.radians(bearing(nla, nlo, end_lat, end_lon))
+            current_toward = ncu * math.sin(brg_rad) + ncv * math.cos(brg_rad)
+
+            score = base_vmc + _SLINGSHOT_W * current_toward
+            if score > best_score:
+                best_score, best_la, best_lo = score, nla, nlo
+
         la, lo = best_la, best_lo
         if step % emit_every == 0:
             path.append([la, lo])
@@ -266,6 +355,19 @@ def build_path(start_lat, start_lon, end_lat, end_lon, bias) -> list:
     if not path or path[-1] != [end_lat, end_lon]:
         path.append([end_lat, end_lon])
     return path
+
+
+def build_path(start_lat, start_lon, end_lat, end_lon, bias) -> list:
+    """
+    Full route: Bay corridor (if starting inside Chesapeake) then open-ocean
+    isochrone VMC path with Gulf Stream slingshot hunting.
+    """
+    if _in_bay_region(start_lat, start_lon):
+        bay_pts = bay_corridor_path(start_lat, start_lon)
+        ocean_entry = bay_pts[-1]
+        ocean_pts = _ocean_path(ocean_entry[0], ocean_entry[1], end_lat, end_lon, bias)
+        return bay_pts + ocean_pts[1:]   # skip duplicate junction point
+    return _ocean_path(start_lat, start_lon, end_lat, end_lon, bias)
 
 
 # ── Sail trim advisor ──────────────────────────────────────────────
